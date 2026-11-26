@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import re
 from typing import Any
 
 import pandas as pd
@@ -29,16 +30,58 @@ def _parse_json_array(text: str) -> list[dict[str, Any]]:
     raise ValueError("LLM response did not contain a valid JSON array.")
 
 
+_LOGIN_TOKENS = (
+    "login",
+    "check-in",
+    "check_in",
+    "clock in",
+    "clock_in",
+    "in time",
+    "in_time",
+    "start",
+)
+_LOGOUT_TOKENS = (
+    "logout",
+    "check-out",
+    "check_out",
+    "clock out",
+    "clock_out",
+    "out time",
+    "out_time",
+    "end",
+)
+
+
+def _find_time_column(
+    columns: list[str],
+    tokens: tuple[str, ...],
+    boundary_pattern: str,
+) -> str | None:
+    """Match an explicit time column token first, falling back to word-boundary regex."""
+    for token in tokens:
+        match = next((c for c in columns if token in c), None)
+        if match:
+            return match
+    return next((c for c in columns if re.search(boundary_pattern, c)), None)
+
+
+def _is_blank_cell(val: Any) -> bool:
+    """Return True if a spreadsheet cell is NaN/NaT/None or empty/whitespace text."""
+    return bool(pd.isna(val)) or (isinstance(val, str) and not val.strip())
+
+
 def _coerce_timestamp(val: Any) -> pd.Timestamp | None:
-    """Convert a string, datetime, or time-like cell value into a pandas Timestamp."""
-    if pd.isna(val):
+    """Convert a string, datetime, or time-like cell value into a non-NaT pandas Timestamp."""
+    if _is_blank_cell(val):
         return None
     if isinstance(val, pd.Timestamp):
-        return val
+        return None if pd.isna(val) else val
     if isinstance(val, str):
-        return pd.to_datetime(val)
+        ts = pd.to_datetime(val.strip())
+        return None if pd.isna(ts) else ts
     if hasattr(val, "hour"):
-        return pd.to_datetime(str(val))
+        ts = pd.to_datetime(str(val))
+        return None if pd.isna(ts) else ts
     return None
 
 
@@ -49,16 +92,17 @@ def process_excel_data(file_bytes: bytes) -> list[dict[str, Any]]:
     Expected columns (fuzzy-matched): 'Employee Name', 'Login Time', 'Logout Time'.
     """
     df = pd.read_excel(io.BytesIO(file_bytes))
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    columns = [str(c).strip().lower() for c in df.columns]
+    df.columns = columns
 
-    name_col = next((c for c in df.columns if "name" in c), None)
+    name_col = next((c for c in columns if "name" in c), None)
     if not name_col:
-        name_col = next((c for c in df.columns if "employee" in c and "id" not in c), None)
+        name_col = next((c for c in columns if "employee" in c and "id" not in c), None)
     if not name_col:
-        name_col = next((c for c in df.columns if "employee" in c or "emp" in c), None)
+        name_col = next((c for c in columns if "employee" in c or "emp" in c), None)
 
-    login_col = next((c for c in df.columns if "in" in c or "start" in c), None)
-    logout_col = next((c for c in df.columns if "out" in c or "end" in c), None)
+    login_col = _find_time_column(columns, _LOGIN_TOKENS, r"\bin\b")
+    logout_col = _find_time_column(columns, _LOGOUT_TOKENS, r"\bout\b")
 
     if not name_col:
         raise ValueError("Could not identify an 'Employee Name' column in the uploaded file.")
@@ -72,14 +116,19 @@ def process_excel_data(file_bytes: bytes) -> list[dict[str, Any]]:
             login_val = row[login_col] if login_col else pd.NaT
             logout_val = row[logout_col] if logout_col else pd.NaT
 
-            if pd.isna(login_val) and pd.isna(logout_val):
+            if _is_blank_cell(login_val) and _is_blank_cell(logout_val):
                 leaves_taken += 1
                 continue
 
             try:
                 login_ts = _coerce_timestamp(login_val)
                 logout_ts = _coerce_timestamp(logout_val)
-                if login_ts is not None and logout_ts is not None:
+                if (
+                    login_ts is not None
+                    and logout_ts is not None
+                    and pd.notna(login_ts)
+                    and pd.notna(logout_ts)
+                ):
                     hours = (logout_ts - login_ts).total_seconds() / 3600.0
                     if hours < 0:
                         hours += 24
@@ -102,6 +151,9 @@ def generate_attendance_report(file_bytes: bytes) -> list[dict[str, Any]]:
     Falls back to raw hour/leave counts if the LLM call fails.
     """
     raw_data = process_excel_data(file_bytes)
+    if not raw_data:
+        return []
+
     data_str = json.dumps(raw_data, indent=2)
 
     try:

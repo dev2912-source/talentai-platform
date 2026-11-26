@@ -1,8 +1,10 @@
 import io
 import json
+import math
 from types import SimpleNamespace
 
 import openpyxl
+import pandas as pd
 
 from app.ai import attendance as attendance_ai
 
@@ -217,3 +219,53 @@ def test_generate_attendance_report_llm_fallback(monkeypatch):
     assert by_name["Bob Smith"]["leaves_taken"] == 1
     assert by_name["Alice Johnson"]["ai_score"] is None
     assert "Error generating feedback" in by_name["Alice Johnson"]["ai_feedback"]
+
+
+def test_working_date_column_and_empty_string_cells_do_not_poison_hours():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Employee Name", "Working Date", "Login Time", "Logout Time"])
+    ws.append(["Alice Johnson", "2026-06-18", "2026-06-18 09:00:00", "2026-06-18 17:30:00"])
+    ws.append(["Alice Johnson", "2026-06-19", "", ""])  # blank strings -> leave
+    ws.append(["Alice Johnson", "2026-06-20", "   ", "   "])  # whitespace strings -> leave
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    summary = attendance_ai.process_excel_data(buf.getvalue())
+    assert len(summary) == 1
+    alice = summary[0]
+    assert alice["name"] == "Alice Johnson"
+    assert math.isfinite(alice["total_hours"])
+    assert alice["total_hours"] == 8.5
+    assert alice["leaves_taken"] == 2
+    assert attendance_ai._coerce_timestamp(pd.NaT) is None
+    assert attendance_ai._coerce_timestamp("") is None
+    assert attendance_ai._coerce_timestamp("   ") is None
+
+
+def test_empty_timesheet_skips_llm_and_corrupt_xlsx_returns_400(client, hr_headers, monkeypatch):
+    def _should_not_be_called(temperature=0.2):
+        raise AssertionError("LLM should not be called for empty timesheet")
+
+    monkeypatch.setattr(attendance_ai, "get_llm", _should_not_be_called)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Employee Name", "Login Time", "Logout Time"])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    assert attendance_ai.generate_attendance_report(buf.getvalue()) == []
+
+    corrupt_res = client.post(
+        "/api/attendance/upload",
+        headers=hr_headers,
+        files={
+            "file": (
+                "corrupt.xlsx",
+                b"PK\x03\x04not-a-valid-zip-or-xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert corrupt_res.status_code == 400

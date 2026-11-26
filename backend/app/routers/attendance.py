@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import logging
 from typing import Any
 import uuid
+import zipfile
 
 from dateutil import parser as dt_parser
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
@@ -221,7 +222,7 @@ async def upload_attendance_timesheet(
 
     try:
         analyzed = await asyncio.to_thread(generate_attendance_report, file_bytes)
-    except ValueError as exc:
+    except (ValueError, zipfile.BadZipFile, OSError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
