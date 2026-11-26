@@ -142,8 +142,9 @@ def _ensure_employee_profile(
         _ensure_non_hr_profile(existing_by_email, email)
         return existing_by_email, str(existing_by_email.get("username") or safe_username)
 
-    department = _extract_row_field(row, "department") or "General"
-    metadata = {
+    row_department = _extract_row_field(row, "department")
+    department = row_department or "General"
+    default_profile_fields = {
         "username": safe_username,
         "is_hr": False,
         "department": department,
@@ -153,18 +154,20 @@ def _ensure_employee_profile(
     }
 
     user_id: str | None = None
+    created_new_user = False
     try:
         created = supabase.auth.admin.create_user(
             {
                 "email": email,
                 "password": secrets.token_urlsafe(16),
                 "email_confirm": True,
-                "user_metadata": metadata,
+                "user_metadata": {"username": safe_username},
             }
         )
         created_user = getattr(created, "user", None)
         if created_user is not None:
             user_id = str(created_user.id)
+            created_new_user = True
     except Exception:
         existing_users = _list_auth_users(supabase)
         matched_user = next(
@@ -181,9 +184,21 @@ def _ensure_employee_profile(
     existing_by_id = _find_profile_by(supabase, "id", user_id)
     if existing_by_id:
         _ensure_non_hr_profile(existing_by_id, email)
+        if created_new_user and row_department and existing_by_id.get("department") != row_department:
+            update_res = (
+                supabase.table("profiles")
+                .update({"department": row_department})
+                .eq("id", user_id)
+                .execute()
+            )
+            updated_rows = getattr(update_res, "data", None) or []
+            if updated_rows:
+                existing_by_id = updated_rows[0]
+            else:
+                existing_by_id["department"] = row_department
         return existing_by_id, str(existing_by_id.get("username") or safe_username)
 
-    profile_row = {"id": user_id, "email": email, **metadata}
+    profile_row = {"id": user_id, "email": email, **default_profile_fields}
     insert_res = supabase.table("profiles").insert(profile_row).execute()
     inserted = getattr(insert_res, "data", None) or [profile_row]
     return inserted[0], safe_username
@@ -201,6 +216,7 @@ def _process_performance_upload(
         ValueError,
         zipfile.BadZipFile,
         OSError,
+        ImportError,
         pd.errors.ParserError,
         openpyxl.utils.exceptions.InvalidFileException,
     ) as exc:
@@ -326,12 +342,15 @@ async def upload_performance_excel(
 
 @router.get("/reports", response_model=PerformanceBatchResponse)
 def get_performance_reports(
-    batch_id: str | None = Query(default=None),
+    batch_id: uuid.UUID | None = Query(default=None),
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> PerformanceBatchResponse:
     """Fetch a specific performance review batch or the latest batch (HR only)."""
-    resolved_batch_id, rows = _fetch_performance_batch(supabase, batch_id)
+    resolved_batch_id, rows = _fetch_performance_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
     return PerformanceBatchResponse(
         batch_id=resolved_batch_id,
         records=[PerformanceRecordOut(**row) for row in rows],
@@ -340,12 +359,15 @@ def get_performance_reports(
 
 @router.get("/reports/pdf")
 def download_performance_reports_pdf(
-    batch_id: str | None = Query(default=None),
+    batch_id: uuid.UUID | None = Query(default=None),
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> Response:
     """Generate and stream a PDF of the requested or latest performance review batch (HR only)."""
-    _resolved_batch_id, rows = _fetch_performance_batch(supabase, batch_id)
+    _resolved_batch_id, rows = _fetch_performance_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
     pdf_bytes = build_performance_pdf(rows)
     return Response(
         content=pdf_bytes,

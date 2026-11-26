@@ -266,3 +266,55 @@ def test_performance_upload_existing_auth_fallback_preserves_existing_employee_p
     assert john_profile["attendance_score"] == 95
     assert john_profile["department"] == "Engineering"
 
+
+def test_performance_upload_sets_department_when_trigger_created_default_profile(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    # Simulate Supabase's handle_new_user trigger inserting 'General' right on create_user
+    orig_create_user = mock_supabase.auth.admin.create_user
+
+    def _create_user_with_trigger(attributes):
+        res = orig_create_user(attributes)
+        user = res.user
+        mock_supabase.tables["profiles"].append({
+            "id": user.id,
+            "username": attributes.get("user_metadata", {}).get("username", "user"),
+            "email": attributes["email"],
+            "is_hr": False,
+            "department": "General",
+            "salary": 50000.0,
+            "leave_balance": 10,
+            "attendance_score": 100,
+        })
+        return res
+
+    monkeypatch.setattr(mock_supabase.auth.admin, "create_user", _create_user_with_trigger)
+    llm_payload = json.dumps({
+        "performance_score": 89,
+        "kpi_achievement_percent": 91.0,
+        "strengths": ["Strong design sense"],
+        "areas_for_improvement": ["More user research"],
+        "recommended_actions": ["Lead design crit"],
+    })
+    monkeypatch.setattr(performance_ai, "get_llm", lambda temperature=0.2: _FakeLLM([llm_payload]))
+
+    xlsx_bytes = _make_performance_xlsx_bytes(
+        [["maya@company.com", "Design", 91]],
+        headers=["Employee Email", "Department", "KPI Score"],
+    )
+    res = client.post(
+        "/api/performance/upload",
+        headers=hr_headers,
+        data={"review_period": "Q3 2026"},
+        files={"file": ("dept.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert res.status_code == 200
+    maya_profile = next(p for p in mock_supabase.tables["profiles"] if p["email"] == "maya@company.com")
+    assert maya_profile["department"] == "Design"
+    assert res.json()["records"][0]["department"] == "Design"
+
+
+def test_performance_invalid_batch_uuid_returns_422(client, hr_headers):
+    assert client.get("/api/performance/reports?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.get("/api/performance/reports/pdf?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+

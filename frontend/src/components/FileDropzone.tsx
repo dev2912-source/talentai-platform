@@ -8,7 +8,7 @@ interface FileDropzoneProps {
   files: File[];
   /** Callback invoked when files are added or removed. */
   onFilesChange: (files: File[]) => void;
-  /** Comma-separated accepted extensions or MIME types (e.g. ".pdf,.docx,.doc,.txt"). */
+  /** Comma-separated accepted extensions or MIME types (e.g. ".pdf,.docx,.txt"). */
   accept?: string;
   /** Allow selecting multiple files at once. */
   multiple?: boolean;
@@ -70,12 +70,26 @@ export function FileDropzone({
 }: FileDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [skippedNotice, setSkippedNotice] = useState<string | null>(null);
 
   function addIncomingFiles(incomingList: FileList | null) {
     if (!incomingList || incomingList.length === 0 || disabled) return;
-    const validIncoming = Array.from(incomingList).filter((file) =>
+    const incoming = Array.from(incomingList);
+    const validIncoming = incoming.filter((file) =>
       matchesAccept(file, accept),
     );
+    const rejectedCount = incoming.length - validIncoming.length;
+
+    if (rejectedCount > 0) {
+      setSkippedNotice(
+        `Skipped ${rejectedCount} unsupported ${
+          rejectedCount === 1 ? "file" : "files"
+        }${accept ? ` (accepted: ${accept})` : ""}.`,
+      );
+    } else {
+      setSkippedNotice(null);
+    }
+
     if (validIncoming.length === 0) return;
 
     if (!multiple) {
@@ -169,18 +183,26 @@ export function FileDropzone({
           className="hidden"
         />
 
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!disabled) inputRef.current?.click();
-          }}
-          className="inline-block px-8 py-2.5 bg-[#544af4] text-white text-[15px] font-medium rounded-xl shadow-sm hover:bg-[#4338ca] transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+        <span
+          aria-hidden="true"
+          className={`inline-block px-8 py-2.5 bg-[#544af4] text-white text-[15px] font-medium rounded-xl shadow-sm transition-colors ${
+            disabled
+              ? "opacity-60 cursor-not-allowed"
+              : "hover:bg-[#4338ca] cursor-pointer"
+          }`}
         >
           {buttonLabel}
-        </button>
+        </span>
       </div>
+
+      {skippedNotice && (
+        <p
+          role="status"
+          className="mt-2.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+        >
+          {skippedNotice}
+        </p>
+      )}
 
       {files.length > 0 && (
         <div className="mt-4 space-y-2 max-h-48 overflow-y-auto pr-1">

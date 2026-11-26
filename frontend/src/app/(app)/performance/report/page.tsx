@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError, apiDownloadBlob, apiFetch } from "@/lib/api";
+import { ApiError, apiDownloadBlob, apiFetch, triggerBlobDownload } from "@/lib/api";
 import type {
   PerformanceBatchResponse,
   PerformanceRecordOut,
@@ -28,17 +28,6 @@ function getScoreTextColor(score: number | null): string {
   if (score >= 85) return "text-emerald-600";
   if (score >= 60) return "text-amber-600";
   return "text-red-600";
-}
-
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 function PerformanceReportInner() {
@@ -56,7 +45,10 @@ function PerformanceReportInner() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const loadReports = useCallback(async () => {
-    if (!token) return;
+    if (!token) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

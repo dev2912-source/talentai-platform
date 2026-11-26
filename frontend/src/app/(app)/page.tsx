@@ -89,7 +89,10 @@ function RecruitmentDashboardContent() {
   const [jobsError, setJobsError] = useState<string | null>(null);
 
   const loadJobs = useCallback(async () => {
-    if (!token) return;
+    if (!token) {
+      setLoadingJobs(false);
+      return;
+    }
     setLoadingJobs(true);
     setJobsError(null);
     try {
@@ -117,6 +120,11 @@ function RecruitmentDashboardContent() {
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setSubmitError(null);
+
+    if (!token) {
+      setSubmitError("Authentication session missing. Please sign in again.");
+      return;
+    }
 
     if (!title.trim() || !description.trim()) {
       setSubmitError("Job title and job description are required.");
@@ -332,7 +340,7 @@ function RecruitmentDashboardContent() {
             <FileDropzone
               files={files}
               onFilesChange={setFiles}
-              accept=".pdf,.docx,.doc,.txt"
+              accept=".pdf,.docx,.txt"
               multiple
               disabled={submitting}
               className="flex-1"

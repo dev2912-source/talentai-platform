@@ -13,17 +13,25 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 
 def _parse_log_timestamp(raw_ts: Any) -> datetime:
-    """Parse an ISO string or datetime from attendance_logs into a UTC-aware datetime."""
+    """Parse an ISO string or datetime into a UTC-aware datetime, falling back to now."""
     if isinstance(raw_ts, datetime):
         dt = raw_ts
     elif isinstance(raw_ts, str) and raw_ts.strip():
-        dt = dt_parser.isoparse(raw_ts)
+        try:
+            dt = dt_parser.isoparse(raw_ts.strip())
+        except (ValueError, OverflowError, TypeError):
+            return datetime.now(timezone.utc)
     else:
         return datetime.now(timezone.utc)
 
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.astimezone(timezone.utc)
+
+
+def parse_utc_timestamp(raw_ts: Any) -> datetime:
+    """Public alias for UTC-normalizing timestamp parser."""
+    return _parse_log_timestamp(raw_ts)
 
 
 def build_attendance_excel(logs: list[dict[str, Any]]) -> bytes:

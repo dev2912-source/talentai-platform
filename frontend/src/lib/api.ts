@@ -95,3 +95,17 @@ export async function apiDownloadBlob(
 
   return await res.blob();
 }
+
+/** Trigger a browser download for a Blob and defer revoking its object URL. */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
+}

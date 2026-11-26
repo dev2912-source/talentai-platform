@@ -25,13 +25,13 @@ begin
   insert into public.profiles (id, username, email, is_hr, department, salary, leave_balance, attendance_score)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
+    coalesce(nullif(trim(new.raw_user_meta_data->>'username'), ''), split_part(new.email, '@', 1)),
     new.email,
-    coalesce((new.raw_user_meta_data->>'is_hr')::boolean, false),
-    coalesce(new.raw_user_meta_data->>'department', 'General'),
-    coalesce((new.raw_user_meta_data->>'salary')::numeric, 50000.00),
-    coalesce((new.raw_user_meta_data->>'leave_balance')::integer, 10),
-    coalesce((new.raw_user_meta_data->>'attendance_score')::integer, 100)
+    false,
+    'General',
+    50000.00,
+    10,
+    100
   )
   on conflict (id) do nothing;
   return new;
@@ -186,3 +186,16 @@ drop policy if exists "Users can view own profile" on public.profiles;
 create policy "Users can view own profile"
   on public.profiles for select
   using (auth.uid() = id);
+
+alter table public.job_postings enable row level security;
+alter table public.candidates enable row level security;
+alter table public.resume_chunks enable row level security;
+alter table public.company_policies enable row level security;
+alter table public.faqs enable row level security;
+alter table public.performance_records enable row level security;
+alter table public.attendance_logs enable row level security;
+alter table public.attendance_reports enable row level security;
+
+-- Restrict vector search RPC to service_role only (FastAPI backend uses service_role key)
+revoke execute on function public.match_resume_chunks(vector, uuid, int) from public, anon, authenticated;
+grant execute on function public.match_resume_chunks(vector, uuid, int) to service_role;

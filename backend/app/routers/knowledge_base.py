@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
@@ -70,12 +71,13 @@ def create_policy(
 
 @router.put("/policies/{policy_id}", response_model=PolicyOut)
 def update_policy(
-    policy_id: str,
+    policy_id: uuid.UUID,
     payload: PolicyIn,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> PolicyOut:
     """Update an existing company policy by ID (HR only)."""
+    policy_id_str = str(policy_id)
     update_fields = {
         "title": payload.title.strip(),
         "content": payload.content.strip(),
@@ -84,7 +86,7 @@ def update_policy(
     res = (
         supabase.table("company_policies")
         .update(update_fields)
-        .eq("id", policy_id)
+        .eq("id", policy_id_str)
         .execute()
     )
     rows = getattr(res, "data", None) or []
@@ -95,16 +97,17 @@ def update_policy(
 
 @router.delete("/policies/{policy_id}")
 def delete_policy(
-    policy_id: str,
+    policy_id: uuid.UUID,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> dict[str, str]:
     """Delete a company policy by ID (HR only)."""
-    res = supabase.table("company_policies").delete().eq("id", policy_id).execute()
+    policy_id_str = str(policy_id)
+    res = supabase.table("company_policies").delete().eq("id", policy_id_str).execute()
     rows = getattr(res, "data", None) or []
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
-    return {"status": "deleted", "id": policy_id}
+    return {"status": "deleted", "id": policy_id_str}
 
 
 @router.post("/faqs", response_model=FaqOut, status_code=status.HTTP_201_CREATED)
@@ -127,12 +130,13 @@ def create_faq(
 
 @router.put("/faqs/{faq_id}", response_model=FaqOut)
 def update_faq(
-    faq_id: str,
+    faq_id: uuid.UUID,
     payload: FaqIn,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> FaqOut:
     """Update an existing FAQ by ID (HR only)."""
+    faq_id_str = str(faq_id)
     update_fields = {
         "question": payload.question.strip(),
         "answer": payload.answer.strip(),
@@ -140,7 +144,7 @@ def update_faq(
     res = (
         supabase.table("faqs")
         .update(update_fields)
-        .eq("id", faq_id)
+        .eq("id", faq_id_str)
         .execute()
     )
     rows = getattr(res, "data", None) or []
@@ -151,13 +155,14 @@ def update_faq(
 
 @router.delete("/faqs/{faq_id}")
 def delete_faq(
-    faq_id: str,
+    faq_id: uuid.UUID,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> dict[str, str]:
     """Delete an FAQ by ID (HR only)."""
-    res = supabase.table("faqs").delete().eq("id", faq_id).execute()
+    faq_id_str = str(faq_id)
+    res = supabase.table("faqs").delete().eq("id", faq_id_str).execute()
     rows = getattr(res, "data", None) or []
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FAQ not found.")
-    return {"status": "deleted", "id": faq_id}
+    return {"status": "deleted", "id": faq_id_str}

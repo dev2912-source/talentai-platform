@@ -15,6 +15,8 @@ from app.db import get_supabase
 
 logger = logging.getLogger(__name__)
 
+_SENTINEL_CANDIDATE_NAMES = {"", "unknown", "unknown candidate"}
+
 
 class HRState(TypedDict, total=False):
     """Typed state flowing through the 4-node HITL recruitment LangGraph."""
@@ -143,21 +145,23 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
         response = llm.invoke(messages)
         shortlisted = _parse_json_from_llm(str(response.content))
 
-        # Filter match_score >= 40 and deduplicate case-insensitively by name/email
+        # Filter match_score >= 40 and deduplicate by email first, else non-sentinel name + source_file
         seen: dict[str, dict[str, Any]] = {}
         for candidate in shortlisted:
             score = float(candidate.get("match_score", 0) or 0)
             if score < 40:
                 continue
-            name = str(candidate.get("name") or "Unknown").strip()
-            source_file = candidate.get("source_file", "")
-            email = str(candidate.get("email", "") or "").strip().lower()
+            raw_name = str(candidate.get("name") or "").strip()
+            name_lower = raw_name.lower()
+            clean_name = "" if name_lower in _SENTINEL_CANDIDATE_NAMES else name_lower
+            source_file = str(candidate.get("source_file") or "").strip()
+            email = str(candidate.get("email") or "").strip().lower()
             candidate["resume_storage_path"] = (
                 storage_by_file.get(source_file)
                 or storage_by_email.get(email)
                 or ""
             )
-            dedup_key = name.lower() if name else email
+            dedup_key = email if email else f"{clean_name}|{source_file.lower()}"
             if dedup_key not in seen or score > float(seen[dedup_key].get("match_score", 0) or 0):
                 seen[dedup_key] = candidate
 
@@ -194,19 +198,23 @@ def schedule_interviews(state: HRState) -> dict[str, Any]:
         scheduled = _parse_json_from_llm(str(response.content))
 
         slot_by_name = {
-            str(s.get("name", "") or "").strip().lower(): s.get("interview_slot", "")
+            cname: s.get("interview_slot", "")
             for s in scheduled
-            if s.get("name")
+            if (cname := str(s.get("name", "") or "").strip().lower()) not in _SENTINEL_CANDIDATE_NAMES
         }
         slot_by_email = {
-            str(s.get("email", "") or "").strip().lower(): s.get("interview_slot", "")
+            cemail: s.get("interview_slot", "")
             for s in scheduled
-            if s.get("email")
+            if (cemail := str(s.get("email", "") or "").strip().lower())
         }
         for candidate in shortlisted:
             cname = str(candidate.get("name", "") or "").strip().lower()
             cemail = str(candidate.get("email", "") or "").strip().lower()
-            slot = slot_by_name.get(cname) or slot_by_email.get(cemail) or "TBD"
+            slot = (
+                slot_by_email.get(cemail)
+                or (slot_by_name.get(cname) if cname not in _SENTINEL_CANDIDATE_NAMES else None)
+                or "TBD"
+            )
             candidate["interview_slot"] = slot
 
         return {"scheduled_candidates": shortlisted, "error": None}

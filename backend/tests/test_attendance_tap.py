@@ -4,9 +4,11 @@ import math
 from types import SimpleNamespace
 
 import openpyxl
+import openpyxl.utils.exceptions
 import pandas as pd
 
 from app.ai import attendance as attendance_ai
+from app.routers import attendance as attendance_router
 
 
 class _FakeLLM:
@@ -269,3 +271,89 @@ def test_empty_timesheet_skips_llm_and_corrupt_xlsx_returns_400(client, hr_heade
         },
     )
     assert corrupt_res.status_code == 400
+
+
+def test_export_excel_normalizes_mixed_timezones_and_handles_invalid_timestamps(
+    client, mock_supabase, hr_headers
+):
+    mock_supabase.tables["attendance_logs"].extend([
+        {
+            "id": 1,
+            "employee_id": "EMP-IST",
+            "timestamp": "2026-06-19T14:30:00+05:30",  # 09:00:00 UTC
+            "device_type": "rfid_scanner",
+            "location": "Gate A",
+            "tap_type": "IN",
+        },
+        {
+            "id": 2,
+            "employee_id": "EMP-WEST",
+            "timestamp": "2026-06-19T23:30:00-02:00",  # 2026-06-20 01:30:00 UTC
+            "device_type": "nfc_reader",
+            "location": "Gate B",
+            "tap_type": "OUT",
+        },
+        {
+            "id": 3,
+            "employee_id": "EMP-BADTS",
+            "timestamp": "not-a-valid-timestamp",
+            "device_type": "biometric",
+            "location": "Gate C",
+            "tap_type": "IN",
+        },
+    ])
+
+    res = client.get("/api/attendance/export-excel", headers=hr_headers)
+    assert res.status_code == 200
+
+    wb = openpyxl.load_workbook(io.BytesIO(res.content))
+    ws = wb["Attendance Logs"]
+    rows = list(ws.iter_rows(values_only=True))
+    assert len(rows) == 4  # header + 3 rows
+    by_emp = {row[1]: row for row in rows[1:]}
+    assert by_emp["EMP-IST"][2] == "2026-06-19"
+    assert by_emp["EMP-IST"][3] == "09:00:00"
+    assert by_emp["EMP-WEST"][2] == "2026-06-20"
+    assert by_emp["EMP-WEST"][3] == "01:30:00"
+    assert by_emp["EMP-BADTS"][4] == "CHECK-IN"
+
+
+def test_attendance_upload_returns_400_on_invalid_file_exception(client, hr_headers, monkeypatch):
+    def _raise_invalid_excel(*_args, **_kwargs):
+        raise openpyxl.utils.exceptions.InvalidFileException("Invalid openpyxl workbook")
+
+    monkeypatch.setattr(attendance_ai.pd, "read_excel", _raise_invalid_excel)
+
+    res = client.post(
+        "/api/attendance/upload",
+        headers=hr_headers,
+        files={
+            "file": (
+                "broken.xlsx",
+                b"broken-bytes",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert res.status_code == 400
+    assert "Invalid" in res.json()["detail"]
+
+    # Also verify router directly catches InvalidFileException if raised from generate_attendance_report
+    monkeypatch.setattr(attendance_router, "generate_attendance_report", _raise_invalid_excel)
+    res2 = client.post(
+        "/api/attendance/upload",
+        headers=hr_headers,
+        files={
+            "file": (
+                "broken2.xlsx",
+                b"broken-bytes",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert res2.status_code == 400
+
+
+def test_attendance_invalid_batch_uuid_returns_422(client, hr_headers):
+    assert client.get("/api/attendance/reports?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.get("/api/attendance/reports/pdf?batch_id=not-a-uuid", headers=hr_headers).status_code == 422

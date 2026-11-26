@@ -30,6 +30,11 @@ function PerformanceDashboardContent() {
     e.preventDefault();
     setError(null);
 
+    if (!token) {
+      setError("Authentication session missing. Please sign in again.");
+      return;
+    }
+
     const period = reviewPeriod.trim();
     if (!period) {
       setError("Please enter a review period (e.g. Q1 2026).");

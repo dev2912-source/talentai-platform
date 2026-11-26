@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import os
+import re
 from typing import Any
 import uuid
 
@@ -26,20 +27,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recruitment", tags=["recruitment"])
 
+ALLOWED_RESUME_EXTENSIONS = {".pdf", ".docx", ".txt"}
+MAX_RESUME_SIZE_BYTES = 10 * 1024 * 1024
+_SENTINEL_CANDIDATE_NAMES = {"", "unknown", "unknown candidate"}
+
 
 def _safe_filename(filename: str | None) -> str:
-    base = os.path.basename(filename or "resume.txt")
-    return base.replace(" ", "_") or "resume.txt"
+    base = os.path.basename((filename or "").strip())
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", base).lstrip(".")
+    return sanitized or "resume.txt"
 
 
 def _match_draft(candidate: dict[str, Any], drafts: list[dict[str, Any]]) -> dict[str, Any]:
-    name = str(candidate.get("name", "") or "").strip().lower()
     email = str(candidate.get("email", "") or "").strip().lower()
-    for draft in drafts:
-        if name and str(draft.get("name", "") or "").strip().lower() == name:
-            return draft
-        if email and str(draft.get("email", "") or "").strip().lower() == email:
-            return draft
+    if email:
+        for draft in drafts:
+            if str(draft.get("email", "") or "").strip().lower() == email:
+                return draft
+
+    name = str(candidate.get("name", "") or "").strip().lower()
+    if name not in _SENTINEL_CANDIDATE_NAMES:
+        for draft in drafts:
+            if str(draft.get("name", "") or "").strip().lower() == name:
+                return draft
     return {}
 
 
@@ -57,8 +67,11 @@ def list_jobs(
         .execute()
     )
     jobs = getattr(jobs_res, "data", None) or []
+    if not jobs:
+        return []
 
-    cands_res = supabase.table("candidates").select("id, job_id").execute()
+    job_ids = [str(j["id"]) for j in jobs]
+    cands_res = supabase.table("candidates").select("id, job_id").in_("job_id", job_ids).execute()
     cands = getattr(cands_res, "data", None) or []
     counts: dict[str, int] = {}
     for row in cands:
@@ -92,32 +105,52 @@ async def screen_resumes(
             detail="Job title and description are required.",
         )
 
-    uploaded_files: list[dict[str, Any]] = []
-    job_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
-
+    staged_files: list[dict[str, Any]] = []
     for upload in resumes:
+        orig_name = (upload.filename or "").strip()
+        ext = os.path.splitext(orig_name)[1].lower()
+        if ext not in ALLOWED_RESUME_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format for '{orig_name or 'unnamed'}'. Allowed types: .pdf, .docx, .txt.",
+            )
         raw_bytes = await upload.read()
+        if len(raw_bytes) > MAX_RESUME_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File '{orig_name}' exceeds the 10 MB maximum file size.",
+            )
         if not raw_bytes:
             continue
-        safe_name = _safe_filename(upload.filename)
-        storage_path = f"{job_id}/{uuid.uuid4().hex[:8]}_{safe_name}"
-        supabase.storage.from_("hr-uploads").upload(
-            storage_path,
-            raw_bytes,
-            {"content-type": upload.content_type or "application/octet-stream"},
-        )
-        uploaded_files.append({
-            "filename": upload.filename or safe_name,
+        safe_name = _safe_filename(orig_name)
+        staged_files.append({
+            "filename": safe_name,
             "content": raw_bytes,
-            "storage_path": storage_path,
+            "content_type": upload.content_type or "application/octet-stream",
         })
 
-    if not uploaded_files:
+    if not staged_files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please upload at least one non-empty resume (PDF, DOCX, or TXT).",
         )
+
+    uploaded_files: list[dict[str, Any]] = []
+    job_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for staged in staged_files:
+        storage_path = f"{job_id}/{uuid.uuid4().hex[:8]}_{staged['filename']}"
+        supabase.storage.from_("hr-uploads").upload(
+            storage_path,
+            staged["content"],
+            {"content-type": staged["content_type"]},
+        )
+        uploaded_files.append({
+            "filename": staged["filename"],
+            "content": staged["content"],
+            "storage_path": storage_path,
+        })
 
     supabase.table("job_postings").insert({
         "id": job_id,
@@ -207,15 +240,16 @@ async def screen_resumes(
 
 @router.get("/jobs/{job_id}", response_model=JobDetailResponse)
 def get_job_detail(
-    job_id: str,
+    job_id: uuid.UUID,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> JobDetailResponse:
     """Return a single job posting and its candidate records."""
+    job_id_str = str(job_id)
     job_res = (
         supabase.table("job_postings")
         .select("*")
-        .eq("id", job_id)
+        .eq("id", job_id_str)
         .maybe_single()
         .execute()
     )
@@ -226,7 +260,7 @@ def get_job_detail(
     cands_res = (
         supabase.table("candidates")
         .select("*")
-        .eq("job_id", job_id)
+        .eq("job_id", job_id_str)
         .order("match_score", desc=True)
         .execute()
     )
@@ -240,16 +274,17 @@ def get_job_detail(
 
 @router.post("/jobs/{job_id}/approve", response_model=ApproveJobResponse)
 def approve_job_candidates(
-    job_id: str,
+    job_id: uuid.UUID,
     payload: ApproveJobRequest,
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> ApproveJobResponse:
     """Apply HR edits/decisions, dispatch approved interview emails, and mark job approved."""
+    job_id_str = str(job_id)
     job_res = (
         supabase.table("job_postings")
         .select("*")
-        .eq("id", job_id)
+        .eq("id", job_id_str)
         .maybe_single()
         .execute()
     )
@@ -257,7 +292,7 @@ def approve_job_candidates(
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job posting not found")
 
-    cands_res = supabase.table("candidates").select("*").eq("job_id", job_id).execute()
+    cands_res = supabase.table("candidates").select("*").eq("job_id", job_id_str).execute()
     existing_by_id = {str(c["id"]): c for c in (getattr(cands_res, "data", None) or [])}
 
     send_errors: list[str] = []
@@ -267,8 +302,17 @@ def approve_job_candidates(
         if not candidate:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Candidate {decision.candidate_id} not found for job {job_id}",
+                detail=f"Candidate {decision.candidate_id} not found for job {job_id_str}",
             )
+
+        if bool(candidate.get("email_sent")):
+            # Audit state is immutable once an invitation email has been sent.
+            if candidate.get("status") != "email_sent":
+                supabase.table("candidates").update({
+                    "email_sent": True,
+                    "status": "email_sent",
+                }).eq("id", decision.candidate_id).execute()
+            continue
 
         subject = decision.email_subject or str(candidate.get("email_subject") or "")
         body = decision.email_body or str(candidate.get("email_body") or "")
@@ -280,11 +324,7 @@ def approve_job_candidates(
 
         if decision.approved:
             recipient = candidate.get("email")
-            already_sent = bool(candidate.get("email_sent"))
-            if already_sent:
-                email_sent = True
-                new_status = "email_sent"
-            elif recipient:
+            if recipient:
                 try:
                     send_interview_email(str(recipient), subject, body)
                     email_sent = True
@@ -323,12 +363,12 @@ def approve_job_candidates(
     supabase.table("job_postings").update({
         "status": "approved",
         "updated_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", job_id).execute()
+    }).eq("id", job_id_str).execute()
 
     updated_res = (
         supabase.table("candidates")
         .select("*")
-        .eq("job_id", job_id)
+        .eq("job_id", job_id_str)
         .order("match_score", desc=True)
         .execute()
     )
@@ -337,7 +377,7 @@ def approve_job_candidates(
     rejected_count = sum(1 for c in updated_candidates if c.get("status") == "rejected")
 
     return ApproveJobResponse(
-        job_id=job_id,
+        job_id=job_id_str,
         status="approved",
         sent_count=sent_count,
         rejected_count=rejected_count,

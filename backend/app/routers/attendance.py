@@ -5,8 +5,9 @@ from typing import Any
 import uuid
 import zipfile
 
-from dateutil import parser as dt_parser
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+import openpyxl.utils.exceptions
+import pandas as pd
 from supabase import Client
 
 from app.ai.attendance import generate_attendance_report
@@ -19,24 +20,11 @@ from app.models.schemas import (
     TapDataOut,
     TapResponse,
 )
-from app.services.exports import build_attendance_excel, build_attendance_pdf
+from app.services.exports import build_attendance_excel, build_attendance_pdf, parse_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
-
-
-def _parse_tap_timestamp(timestamp_str: str) -> datetime:
-    """Parse an ISO timestamp string into a UTC-aware datetime, falling back to now."""
-    if not timestamp_str:
-        return datetime.now(timezone.utc)
-    try:
-        parsed = dt_parser.isoparse(timestamp_str)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except (ValueError, OverflowError, TypeError):
-        return datetime.now(timezone.utc)
 
 
 def _employee_id_candidates(user: CurrentUser) -> list[str]:
@@ -122,7 +110,7 @@ async def hardware_tap(
     device_type = str(payload.get("deviceType") or "").strip() or "rfid_scanner"
     location = str(payload.get("location") or "").strip() or "Main Entrance"
 
-    tap_time = _parse_tap_timestamp(timestamp_str)
+    tap_time = parse_utc_timestamp(timestamp_str)
     today_start = tap_time.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = tap_time.replace(hour=23, minute=59, second=59, microsecond=999999)
 
@@ -222,7 +210,14 @@ async def upload_attendance_timesheet(
 
     try:
         analyzed = await asyncio.to_thread(generate_attendance_report, file_bytes)
-    except (ValueError, zipfile.BadZipFile, OSError) as exc:
+    except (
+        ValueError,
+        zipfile.BadZipFile,
+        OSError,
+        ImportError,
+        pd.errors.ParserError,
+        openpyxl.utils.exceptions.InvalidFileException,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -263,12 +258,15 @@ async def upload_attendance_timesheet(
 
 @router.get("/reports", response_model=AttendanceReportBatchResponse)
 def get_attendance_reports(
-    batch_id: str | None = Query(default=None),
+    batch_id: uuid.UUID | None = Query(default=None),
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> AttendanceReportBatchResponse:
     """Fetch a specific AI attendance report batch or the latest batch."""
-    resolved_batch_id, rows = _fetch_report_batch(supabase, batch_id)
+    resolved_batch_id, rows = _fetch_report_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
     return AttendanceReportBatchResponse(
         batch_id=resolved_batch_id,
         reports=[AttendanceReportOut(**row) for row in rows],
@@ -277,12 +275,15 @@ def get_attendance_reports(
 
 @router.get("/reports/pdf")
 def download_attendance_reports_pdf(
-    batch_id: str | None = Query(default=None),
+    batch_id: uuid.UUID | None = Query(default=None),
     _hr: CurrentUser = Depends(require_hr),
     supabase: Client = Depends(get_supabase),
 ) -> Response:
     """Generate and stream a landscape PDF of the requested or latest attendance report batch."""
-    _resolved_batch_id, rows = _fetch_report_batch(supabase, batch_id)
+    _resolved_batch_id, rows = _fetch_report_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
     pdf_bytes = build_attendance_pdf(rows)
     return Response(
         content=pdf_bytes,

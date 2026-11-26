@@ -46,9 +46,12 @@ def extract_text_from_bytes(filename: str, content: bytes) -> str:
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
         return extract_text_from_pdf_bytes(content)
-    if ext in (".docx", ".doc"):
+    if ext == ".docx":
         return extract_text_from_docx_bytes(content)
-    return content.decode("utf-8", errors="ignore")
+    if ext == ".txt":
+        return content.decode("utf-8", errors="ignore")
+    logger.warning("Unsupported file extension '%s' for %s", ext, filename)
+    return ""
 
 
 def extract_text(file_path: str) -> str:

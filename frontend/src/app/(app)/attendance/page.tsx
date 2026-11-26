@@ -20,7 +20,7 @@ import {
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
 import { FileDropzone } from "@/components/FileDropzone";
-import { ApiError, apiDownloadBlob, apiFetch } from "@/lib/api";
+import { ApiError, apiDownloadBlob, apiFetch, triggerBlobDownload } from "@/lib/api";
 import type {
   AttendanceLogOut,
   AttendanceReportBatchResponse,
@@ -43,17 +43,6 @@ function formatTapTime(iso: string): string {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 function AttendanceContent() {
@@ -106,7 +95,10 @@ function AttendanceContent() {
   }, []);
 
   const loadLogs = useCallback(async () => {
-    if (!token || !isHr) return;
+    if (!token || !isHr) {
+      setLoadingLogs(false);
+      return;
+    }
     setLoadingLogs(true);
     setLogsError(null);
     try {
@@ -209,6 +201,11 @@ function AttendanceContent() {
   async function handleTimesheetSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setUploadError(null);
+
+    if (!token) {
+      setUploadError("Authentication session missing. Please sign in again.");
+      return;
+    }
 
     if (files.length === 0) {
       setUploadError("Please select an Excel (.xlsx or .xls) timesheet file.");

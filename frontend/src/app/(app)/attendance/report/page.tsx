@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError, apiDownloadBlob, apiFetch } from "@/lib/api";
+import { ApiError, apiDownloadBlob, apiFetch, triggerBlobDownload } from "@/lib/api";
 import type {
   AttendanceReportBatchResponse,
   AttendanceReportOut,
@@ -24,17 +24,6 @@ function getScoreBadgeClass(score: number | null): string {
   if (score >= 80) return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (score >= 50) return "bg-amber-50 text-amber-700 border-amber-200";
   return "bg-red-50 text-red-700 border-red-200";
-}
-
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 function AttendanceReportInner() {
@@ -52,7 +41,10 @@ function AttendanceReportInner() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const loadReports = useCallback(async () => {
-    if (!token) return;
+    if (!token) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

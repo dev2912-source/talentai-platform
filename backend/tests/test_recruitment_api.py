@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from app.ai import recruitment_graph, vector_store
+from app.routers import recruitment as recruitment_router
 from app.services import email as email_service
 
 
@@ -469,3 +470,189 @@ def test_approve_handles_partial_smtp_failure_without_aborting_batch(
     assert by_id[cand_fail_id]["email_sent"] is False
     assert by_id[cand_fail_id]["status"] == "email_drafted"
     assert mock_supabase.tables["job_postings"][0]["status"] == "pending_approval"
+
+
+def test_screen_rejects_unsupported_extensions_and_oversized_files_before_storage(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    for bad_name, content_type in [
+        ("legacy.doc", "application/msword"),
+        ("malware.exe", "application/octet-stream"),
+    ]:
+        res = client.post(
+            "/api/recruitment/screen",
+            headers=hr_headers,
+            data={
+                "title": "Backend Engineer",
+                "department": "Engineering",
+                "description": "Build APIs",
+                "required_skills": "Python",
+                "experience_years": "2",
+            },
+            files=[("resumes", (bad_name, b"binary payload", content_type))],
+        )
+        assert res.status_code == 400
+        assert mock_supabase.storage.buckets["hr-uploads"] == {}
+        assert mock_supabase.tables["job_postings"] == []
+
+    monkeypatch.setattr(recruitment_router, "MAX_RESUME_SIZE_BYTES", 16)
+    oversized = client.post(
+        "/api/recruitment/screen",
+        headers=hr_headers,
+        data={
+            "title": "Backend Engineer",
+            "department": "Engineering",
+            "description": "Build APIs",
+            "required_skills": "Python",
+            "experience_years": "2",
+        },
+        files=[("resumes", ("big.txt", b"x" * 32, "text/plain"))],
+    )
+    assert oversized.status_code == 400
+    assert "size limit" in oversized.json()["detail"].lower() or "maximum file size" in oversized.json()["detail"].lower()
+    assert mock_supabase.storage.buckets["hr-uploads"] == {}
+    assert mock_supabase.tables["job_postings"] == []
+
+
+def test_screen_preserves_two_unnamed_resumes_from_different_files(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        vector_store,
+        "embed_texts",
+        lambda texts: [[0.2] * 768 for _ in texts],
+    )
+
+    screener_json = json.dumps([
+        {
+            "name": "Unknown",
+            "email": "",
+            "match_score": 82,
+            "matched_skills": "Python, FastAPI",
+            "source_file": "resume_one.txt",
+        },
+        {
+            "name": "Unknown Candidate",
+            "email": "",
+            "match_score": 76,
+            "matched_skills": "PostgreSQL, Docker",
+            "source_file": "resume_two.txt",
+        },
+    ])
+    scheduler_json = json.dumps([])
+    communicator_json = json.dumps([])
+    monkeypatch.setattr(
+        recruitment_graph,
+        "get_llm",
+        lambda temperature=0.2: _FakeLLM([screener_json, scheduler_json, communicator_json]),
+    )
+
+    res = client.post(
+        "/api/recruitment/screen",
+        headers=hr_headers,
+        data={
+            "title": "Platform Engineer",
+            "department": "Engineering",
+            "description": "Build backend systems",
+            "required_skills": "Python, PostgreSQL",
+            "experience_years": "3",
+        },
+        files=[
+            ("resumes", ("resume_one.txt", b"Python FastAPI developer 5 years", "text/plain")),
+            ("resumes", ("resume_two.txt", b"PostgreSQL Docker engineer 4 years", "text/plain")),
+        ],
+    )
+    assert res.status_code == 200
+    candidates = res.json()["candidates"]
+    assert len(candidates) == 2
+    assert {c["resume_source"] for c in candidates} == {"resume_one.txt", "resume_two.txt"}
+
+    # _match_draft prioritizes email and ignores sentinel names
+    drafts = [
+        {"name": "Unknown", "email": "b@example.com", "subject": "Draft B"},
+        {"name": "Unknown", "email": "a@example.com", "subject": "Draft A"},
+    ]
+    assert recruitment_router._match_draft(
+        {"name": "Unknown", "email": "a@example.com"},
+        drafts,
+    )["subject"] == "Draft A"
+    assert recruitment_router._match_draft(
+        {"name": "Unknown Candidate", "email": ""},
+        drafts,
+    ) == {}
+
+
+def test_approve_preserves_email_sent_immutable_even_if_resubmitted_rejected(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    job_id = "12121212-1212-1212-1212-121212121212"
+    cand_id = "34343434-3434-3434-3434-343434343434"
+
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "Data Engineer",
+        "department": "Data",
+        "description": "Build pipelines",
+        "required_skills": "Python, SQL",
+        "experience_years": 3,
+        "status": "approved",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+    mock_supabase.tables["candidates"].append({
+        "id": cand_id,
+        "job_id": job_id,
+        "name": "Alice Johnson",
+        "email": "alice@example.com",
+        "match_score": 91.0,
+        "matched_skills": "Python, SQL",
+        "interview_slot": "Monday 10:00 AM",
+        "email_subject": "Original Sent Invite",
+        "email_body": "Original body",
+        "resume_source": "alice.txt",
+        "resume_storage_path": f"{job_id}/alice.txt",
+        "email_sent": True,
+        "status": "email_sent",
+    })
+
+    send_called = False
+
+    def _unexpected_send(*_args, **_kwargs):
+        nonlocal send_called
+        send_called = True
+        return {"status": "sent"}
+
+    monkeypatch.setattr("app.routers.recruitment.send_interview_email", _unexpected_send)
+
+    res = client.post(
+        f"/api/recruitment/jobs/{job_id}/approve",
+        headers=hr_headers,
+        json={
+            "decisions": [
+                {
+                    "candidate_id": cand_id,
+                    "approved": False,
+                    "email_subject": "Tampered Subject",
+                    "email_body": "Tampered Body",
+                    "interview_slot": "Never",
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200
+    assert send_called is False
+    payload = res.json()
+    assert payload["sent_count"] == 1
+    assert payload["rejected_count"] == 0
+    saved = mock_supabase.tables["candidates"][0]
+    assert saved["email_sent"] is True
+    assert saved["status"] == "email_sent"
+    assert saved["email_subject"] == "Original Sent Invite"
+
+
+def test_recruitment_invalid_uuid_returns_422(client, hr_headers):
+    assert client.get("/api/recruitment/jobs/not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.post(
+        "/api/recruitment/jobs/not-a-uuid/approve",
+        headers=hr_headers,
+        json={"decisions": []},
+    ).status_code == 422

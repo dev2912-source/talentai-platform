@@ -3,7 +3,9 @@ import json
 import logging
 import re
 from typing import Any
+import zipfile
 
+import openpyxl.utils.exceptions
 import pandas as pd
 
 from app.ai.llm import ATTENDANCE_PROMPT, get_llm
@@ -91,7 +93,18 @@ def process_excel_data(file_bytes: bytes) -> list[dict[str, Any]]:
 
     Expected columns (fuzzy-matched): 'Employee Name', 'Login Time', 'Logout Time'.
     """
-    df = pd.read_excel(io.BytesIO(file_bytes))
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes))
+    except (
+        ValueError,
+        zipfile.BadZipFile,
+        OSError,
+        ImportError,
+        pd.errors.ParserError,
+        openpyxl.utils.exceptions.InvalidFileException,
+    ) as exc:
+        raise ValueError(f"Invalid or corrupt Excel file: {exc}") from exc
+
     columns = [str(c).strip().lower() for c in df.columns]
     df.columns = columns
 

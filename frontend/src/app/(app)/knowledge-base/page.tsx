@@ -63,7 +63,10 @@ function KnowledgeBaseContent() {
   const faqFormRef = useRef<HTMLDivElement>(null);
 
   const loadOverview = useCallback(async () => {
-    if (!token) return;
+    if (!token) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setLoadError(null);
     try {
