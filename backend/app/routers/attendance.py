@@ -99,16 +99,16 @@ async def hardware_tap(
             detail="Invalid JSON payload.",
         )
 
-    employee_id = str(payload.get("employeeId") or "").strip()
+    employee_id = str(payload.get("employeeId") or "").strip()[:64]
     if not employee_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing required field: employeeId.",
         )
 
-    timestamp_str = str(payload.get("timestamp") or "").strip()
-    device_type = str(payload.get("deviceType") or "").strip() or "rfid_scanner"
-    location = str(payload.get("location") or "").strip() or "Main Entrance"
+    timestamp_str = str(payload.get("timestamp") or "").strip()[:64]
+    device_type = (str(payload.get("deviceType") or "").strip() or "rfid_scanner")[:64]
+    location = (str(payload.get("location") or "").strip() or "Main Entrance")[:128]
 
     tap_time = parse_utc_timestamp(timestamp_str)
     today_start = tap_time.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -226,7 +226,7 @@ async def upload_attendance_timesheet(
         logger.exception("Failed to process attendance Excel upload")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process timesheet: {exc}",
+            detail="Failed to process timesheet. Please check the file format and try again.",
         ) from exc
 
     batch_id = str(uuid.uuid4())

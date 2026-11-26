@@ -186,7 +186,7 @@ async def screen_resumes(
         }).eq("id", job_id).execute()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AI screening pipeline failed: {exc}",
+            detail="AI screening pipeline encountered an internal error. Check server logs.",
         ) from exc
 
     if result.get("error"):

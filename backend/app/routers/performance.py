@@ -331,7 +331,7 @@ async def upload_performance_excel(
         logger.exception("Performance bulk generation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate performance reviews: {exc}",
+            detail="Failed to generate performance reviews. Please verify the spreadsheet format.",
         ) from exc
 
     return PerformanceBatchResponse(

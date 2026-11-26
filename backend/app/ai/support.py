@@ -33,9 +33,10 @@ SUPPORT_AGENT_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def _extract_keywords(message: str) -> list[str]:
-    """Extract distinct alphanumeric keywords longer than 3 characters."""
+    """Extract distinct alphanumeric keywords longer than 3 characters, capped at 10 tokens."""
     tokens = re.findall(r"[a-z0-9_-]+", message.lower())
-    return list(dict.fromkeys(tok for tok in tokens if len(tok) > 3))
+    keywords = list(dict.fromkeys(tok for tok in tokens if len(tok) > 3))
+    return keywords[:10]
 
 
 def _search_table_by_keywords(
