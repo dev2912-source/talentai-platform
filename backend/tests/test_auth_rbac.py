@@ -65,7 +65,7 @@ def test_require_employee_allows_employee_and_blocks_hr(hr_user, employee_user):
 
 def test_settings_have_safe_defaults():
     settings = get_settings()
-    assert settings.OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
+    assert settings.NVIDIA_BASE_URL == "https://integrate.api.nvidia.com/v1"
     assert "http://localhost:3000" in settings.frontend_origins_list
 
 
@@ -80,14 +80,14 @@ def test_seed_database_is_idempotent(mock_supabase):
 
     mock_supabase.tables["profiles"] = []
     first = seed_database(mock_supabase)
-    assert first == {"users_ensured": 2, "policies_added": 3, "faqs_added": 3}
-    assert len(mock_supabase.tables["profiles"]) == 2
-    assert len(mock_supabase.tables["company_policies"]) == 3
-    assert len(mock_supabase.tables["faqs"]) == 3
+    assert first == {"users_ensured": 5, "policies_added": 4, "faqs_added": 4}
+    assert len(mock_supabase.tables["profiles"]) == 5
+    assert len(mock_supabase.tables["company_policies"]) == 4
+    assert len(mock_supabase.tables["faqs"]) == 4
 
     second = seed_database(mock_supabase)
-    assert second == {"users_ensured": 2, "policies_added": 0, "faqs_added": 0}
-    assert len(mock_supabase.tables["profiles"]) == 2
-    assert len(mock_supabase.tables["company_policies"]) == 3
-    assert len(mock_supabase.tables["faqs"]) == 3
+    assert second == {"users_ensured": 5, "policies_added": 0, "faqs_added": 0}
+    assert len(mock_supabase.tables["profiles"]) == 5
+    assert len(mock_supabase.tables["company_policies"]) == 4
+    assert len(mock_supabase.tables["faqs"]) == 4
 

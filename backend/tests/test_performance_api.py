@@ -317,4 +317,49 @@ def test_performance_upload_sets_department_when_trigger_created_default_profile
 def test_performance_invalid_batch_uuid_returns_422(client, hr_headers):
     assert client.get("/api/performance/reports?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
     assert client.get("/api/performance/reports/pdf?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.get("/api/performance/reports/excel?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.delete("/api/performance/batches/not-a-uuid", headers=hr_headers).status_code == 422
+
+
+def test_sample_kpi_batches_excel_and_delete_batch(
+    client, mock_supabase, hr_headers, employee_headers
+):
+    import openpyxl
+
+    assert client.get("/api/performance/sample-kpi", headers=employee_headers).status_code == 403
+    sample_res = client.get("/api/performance/sample-kpi", headers=hr_headers)
+    assert sample_res.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(sample_res.content))
+    assert "KPI Data" in wb.sheetnames
+
+    batch_id = "15151515-1515-1515-1515-151515151515"
+    mock_supabase.tables["performance_records"].append({
+        "id": "16161616-1616-1616-1616-161616161616",
+        "batch_id": batch_id,
+        "employee_id": "22222222-2222-2222-2222-222222222222",
+        "employee_name": "john",
+        "employee_email": "john@company.com",
+        "department": "Engineering",
+        "review_period": "Q4 2026",
+        "kpi_data": "Tasks: 46/45",
+        "performance_score": 92,
+        "kpi_achievement_percent": 102.0,
+        "strengths": "High output",
+        "areas_for_improvement": "Docs",
+        "recommended_actions": "Mentor team",
+        "created_at": "2026-11-26T12:00:00+00:00",
+    })
+
+    batches_res = client.get("/api/performance/batches", headers=hr_headers)
+    assert batches_res.status_code == 200
+    assert len(batches_res.json()) == 1
+    assert batches_res.json()[0]["review_period"] == "Q4 2026"
+
+    excel_res = client.get(f"/api/performance/reports/excel?batch_id={batch_id}", headers=hr_headers)
+    assert excel_res.status_code == 200
+    assert "spreadsheetml" in excel_res.headers["content-type"]
+
+    del_res = client.delete(f"/api/performance/batches/{batch_id}", headers=hr_headers)
+    assert del_res.status_code == 200
+    assert mock_supabase.tables["performance_records"] == []
 

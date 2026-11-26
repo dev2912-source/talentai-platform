@@ -100,7 +100,7 @@ export default function SignupPage() {
       <div className="absolute bottom-1/4 -left-64 w-96 h-96 bg-accent/10 rounded-full blur-3xl" />
 
       <div className="w-full max-w-md relative z-10">
-        <div className="bg-card border border-border rounded-2xl p-8 shadow-2xl backdrop-blur-xl">
+        <div className="bg-card border border-border rounded-2xl p-5 sm:p-8 shadow-2xl backdrop-blur-xl">
           <div className="text-center mb-8">
             <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-chart-1 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-accent/20">
               <div

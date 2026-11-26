@@ -1,16 +1,21 @@
+from datetime import datetime, timedelta, timezone
 import json
 import logging
+import re
+import time
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from app.ai.llm import (
     COMMUNICATOR_PROMPT,
+    NvidiaNIMChatClient,
     SCHEDULER_PROMPT,
     SCREENER_PROMPT,
     get_llm,
 )
 from app.ai.vector_store import ingest_resumes_to_pgvector, search_resumes_pgvector
+from app.config import get_settings
 from app.db import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -26,6 +31,7 @@ class HRState(TypedDict, total=False):
     job_description: str
     required_skills: str
     experience_years: int
+    min_score: float
     uploaded_files: List[Dict[str, Any]]
     supabase: Any
 
@@ -47,6 +53,17 @@ def _parse_json_from_llm(text: str) -> list[dict[str, Any]]:
         cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
 
+    try:
+        direct = json.loads(cleaned)
+        if isinstance(direct, list):
+            return direct
+        if isinstance(direct, dict):
+            for key in ("candidates", "shortlisted", "shortlisted_candidates", "results", "data"):
+                if isinstance(direct.get(key), list):
+                    return direct[key]
+    except json.JSONDecodeError:
+        pass
+
     start = cleaned.find("[")
     end = cleaned.rfind("]")
     if start != -1 and end != -1 and end > start:
@@ -59,6 +76,89 @@ def _parse_json_from_llm(text: str) -> list[dict[str, Any]]:
             return []
     logger.warning("No JSON array found in LLM output: %s", cleaned[:300])
     return []
+
+
+def _parse_score(raw_score: Any) -> float:
+    """Safely parse match_score values like 85, '85%', '85/100', or 85.5."""
+    if raw_score is None or isinstance(raw_score, bool):
+        return 0.0
+    if isinstance(raw_score, (int, float)):
+        return max(0.0, min(100.0, float(raw_score)))
+    match = re.search(r"(\d+(?:\.\d+)?)", str(raw_score))
+    if not match:
+        return 0.0
+    return max(0.0, min(100.0, float(match.group(1))))
+
+
+def _format_skills(raw_skills: Any) -> str:
+    """Normalize matched_skills whether the LLM returns a list or string."""
+    if isinstance(raw_skills, list):
+        return ", ".join(str(s).strip() for s in raw_skills if str(s).strip())
+    return str(raw_skills or "").strip()
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "429" in msg or "rate-limit" in msg or "rate limit" in msg or "timed out" in msg
+
+
+def _invoke_llm_resilient(messages: Any, temperature: float) -> Any:
+    """Invoke configured NVIDIA NIM LLM, retrying once or falling back on HTTP 429/timeout."""
+    llm = get_llm(temperature=temperature)
+    try:
+        return llm.invoke(messages)
+    except Exception as exc:
+        if not _is_rate_limit_error(exc):
+            raise
+        logger.warning("LLM transient error, retrying after short delay: %s", exc)
+        time.sleep(1.5)
+        try:
+            return llm.invoke(messages)
+        except Exception as retry_exc:
+            if not _is_rate_limit_error(retry_exc):
+                raise
+            settings = get_settings()
+            if not settings.NVIDIA_API_KEY:
+                raise
+            logger.warning("Falling back to nvidia/nemotron-3.5-lightning-30b-a3b.")
+            fallback_llm = NvidiaNIMChatClient(
+                api_key=settings.NVIDIA_API_KEY,
+                base_url=settings.NVIDIA_BASE_URL,
+                model="nvidia/nemotron-3.5-lightning-30b-a3b",
+                temperature=temperature,
+                max_tokens=2048,
+            )
+            return fallback_llm.invoke(messages)
+
+
+def _fallback_interview_slot(index: int) -> str:
+    """Generate a deterministic 45-minute weekday interview slot starting next business day."""
+    day = datetime.now(timezone.utc) + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    slot_dt = day.replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(minutes=45 * index)
+    return slot_dt.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+
+
+def _fallback_email_draft(candidate: dict[str, Any], job_title: str) -> dict[str, str]:
+    """Generate a clean personalized interview invitation email when LLM drafting is unavailable."""
+    name = str(candidate.get("name") or "Candidate").strip()
+    slot = str(candidate.get("interview_slot") or "TBD").strip()
+    skills = _format_skills(candidate.get("matched_skills"))
+    skills_line = f" with your experience in {skills}" if skills else ""
+    return {
+        "name": name,
+        "email": str(candidate.get("email") or ""),
+        "subject": f"Interview Invitation — {job_title}",
+        "body": (
+            f"Dear {name},\n\n"
+            f"Congratulations! We were impressed by your background{skills_line} and would like to invite you "
+            f"to interview for the {job_title} position.\n\n"
+            f"Proposed Interview Slot: {slot}\n\n"
+            f"Please reply to confirm your availability for this time.\n\n"
+            f"Best regards,\nTalentAI Hiring Team"
+        ),
+    }
 
 
 def _resolve_supabase(state: HRState) -> Any:
@@ -91,7 +191,8 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
             "retrieved_chunks": [],
             "error": state["error"],
         }
-    if not state.get("ingested_docs"):
+    ingested_docs = state.get("ingested_docs") or []
+    if not ingested_docs:
         return {
             "shortlisted_candidates": [],
             "retrieved_chunks": [],
@@ -106,6 +207,23 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
 
     query = f"{job_title} {job_description} {required_skills}"
     chunks = search_resumes_pgvector(_resolve_supabase(state), query=query, job_id=job_id, match_count=30)
+
+    if not chunks:
+        # Synthesize chunks directly from ingested_docs so screening never fails on empty RPC results
+        chunks = [
+            {
+                "document": str(doc.get("full_text", ""))[:2400],
+                "metadata": {
+                    "source_file": doc.get("filename", "N/A"),
+                    "candidate_name": doc.get("name", "N/A"),
+                    "candidate_email": doc.get("email", "N/A"),
+                    "job_id": job_id,
+                },
+                "similarity": 1.0,
+            }
+            for doc in ingested_docs
+            if doc.get("full_text")
+        ]
 
     if not chunks:
         return {
@@ -125,7 +243,6 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
         )
     resume_text = "\n".join(formatted_chunks)
 
-    ingested_docs = state.get("ingested_docs", [])
     storage_by_file = {doc.get("filename", ""): doc.get("storage_path", "") for doc in ingested_docs}
     storage_by_email = {
         doc.get("email", "").lower(): doc.get("storage_path", "")
@@ -134,7 +251,6 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
     }
 
     try:
-        llm = get_llm(temperature=0.1)
         messages = SCREENER_PROMPT.format_messages(
             job_title=job_title,
             job_description=job_description,
@@ -142,15 +258,21 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
             experience_years=experience_years,
             resume_chunks=resume_text,
         )
-        response = llm.invoke(messages)
+        response = _invoke_llm_resilient(messages, temperature=0.1)
         shortlisted = _parse_json_from_llm(str(response.content))
 
-        # Filter match_score >= 40 and deduplicate by email first, else non-sentinel name + source_file
+        # Filter match_score >= min_score (default 40) and deduplicate by email first, else non-sentinel name + source_file
+        raw_min = state.get("min_score")
+        min_threshold = max(0.0, min(100.0, float(raw_min if raw_min is not None else 40.0)))
         seen: dict[str, dict[str, Any]] = {}
         for candidate in shortlisted:
-            score = float(candidate.get("match_score", 0) or 0)
-            if score < 40:
+            if not isinstance(candidate, dict):
                 continue
+            score = _parse_score(candidate.get("match_score"))
+            if score < min_threshold:
+                continue
+            candidate["match_score"] = score
+            candidate["matched_skills"] = _format_skills(candidate.get("matched_skills"))
             raw_name = str(candidate.get("name") or "").strip()
             name_lower = raw_name.lower()
             clean_name = "" if name_lower in _SENTINEL_CANDIDATE_NAMES else name_lower
@@ -190,39 +312,40 @@ def schedule_interviews(state: HRState) -> dict[str, Any]:
         return {"scheduled_candidates": [], "error": None}
 
     try:
-        llm = get_llm(temperature=0.3)
         messages = SCHEDULER_PROMPT.format_messages(
             candidates_json=json.dumps(shortlisted, indent=2),
         )
-        response = llm.invoke(messages)
+        response = _invoke_llm_resilient(messages, temperature=0.3)
         scheduled = _parse_json_from_llm(str(response.content))
 
         slot_by_name = {
             cname: s.get("interview_slot", "")
             for s in scheduled
-            if (cname := str(s.get("name", "") or "").strip().lower()) not in _SENTINEL_CANDIDATE_NAMES
+            if isinstance(s, dict)
+            and (cname := str(s.get("name", "") or "").strip().lower()) not in _SENTINEL_CANDIDATE_NAMES
         }
         slot_by_email = {
             cemail: s.get("interview_slot", "")
             for s in scheduled
-            if (cemail := str(s.get("email", "") or "").strip().lower())
+            if isinstance(s, dict)
+            and (cemail := str(s.get("email", "") or "").strip().lower())
         }
-        for candidate in shortlisted:
+        for idx, candidate in enumerate(shortlisted):
             cname = str(candidate.get("name", "") or "").strip().lower()
             cemail = str(candidate.get("email", "") or "").strip().lower()
             slot = (
                 slot_by_email.get(cemail)
                 or (slot_by_name.get(cname) if cname not in _SENTINEL_CANDIDATE_NAMES else None)
-                or "TBD"
+                or _fallback_interview_slot(idx)
             )
             candidate["interview_slot"] = slot
 
         return {"scheduled_candidates": shortlisted, "error": None}
     except Exception as exc:
-        logger.exception("Scheduling failed")
-        for candidate in shortlisted:
-            candidate["interview_slot"] = "TBD"
-        return {"scheduled_candidates": shortlisted, "error": f"Scheduling error: {exc}"}
+        logger.warning("Scheduling LLM failed, using deterministic slot fallback: %s", exc)
+        for idx, candidate in enumerate(shortlisted):
+            candidate["interview_slot"] = _fallback_interview_slot(idx)
+        return {"scheduled_candidates": shortlisted, "error": None}
 
 
 def draft_emails(state: HRState) -> dict[str, Any]:
@@ -238,17 +361,19 @@ def draft_emails(state: HRState) -> dict[str, Any]:
         return {"email_drafts": [], "error": None}
 
     try:
-        llm = get_llm(temperature=0.4)
         messages = COMMUNICATOR_PROMPT.format_messages(
             job_title=job_title,
             scheduled_json=json.dumps(scheduled, indent=2),
         )
-        response = llm.invoke(messages)
+        response = _invoke_llm_resilient(messages, temperature=0.4)
         drafts = _parse_json_from_llm(str(response.content))
+        if not drafts:
+            drafts = [_fallback_email_draft(c, job_title) for c in scheduled]
         return {"email_drafts": drafts, "error": None}
     except Exception as exc:
-        logger.exception("Email drafting failed")
-        return {"email_drafts": [], "error": f"Email drafting error: {exc}"}
+        logger.warning("Email drafting LLM failed, using template fallback: %s", exc)
+        drafts = [_fallback_email_draft(c, job_title) for c in scheduled]
+        return {"email_drafts": drafts, "error": None}
 
 
 def build_recruitment_graph():

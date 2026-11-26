@@ -52,11 +52,13 @@ export interface ScreenJobResponse {
 export interface JobDetailResponse {
   job: JobPostingOut;
   candidates: CandidateOut[];
+  email_mode?: string;
 }
 
 export interface CandidateDecisionIn {
   candidate_id: string;
   approved: boolean;
+  email?: string | null;
   email_subject: string;
   email_body: string;
   interview_slot?: string | null;
@@ -71,6 +73,7 @@ export interface ApproveJobResponse {
   status: string;
   sent_count: number;
   rejected_count: number;
+  email_mode?: string;
   candidates: CandidateOut[];
 }
 
@@ -116,6 +119,12 @@ export interface AttendanceReportBatchResponse {
   reports: AttendanceReportOut[];
 }
 
+export interface AttendanceBatchSummaryOut {
+  batch_id: string;
+  created_at: string | null;
+  employee_count: number;
+}
+
 export interface PerformanceRecordOut {
   id: string;
   batch_id: string;
@@ -136,6 +145,13 @@ export interface PerformanceRecordOut {
 export interface PerformanceBatchResponse {
   batch_id: string | null;
   records: PerformanceRecordOut[];
+}
+
+export interface PerformanceBatchSummaryOut {
+  batch_id: string;
+  review_period: string;
+  created_at: string | null;
+  employee_count: number;
 }
 
 export interface PolicyIn {

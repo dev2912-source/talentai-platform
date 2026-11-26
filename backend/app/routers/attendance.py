@@ -14,13 +14,20 @@ from app.ai.attendance import generate_attendance_report
 from app.db import get_supabase
 from app.deps import CurrentUser, get_current_user, require_hr
 from app.models.schemas import (
+    AttendanceBatchSummaryOut,
     AttendanceLogOut,
     AttendanceReportBatchResponse,
     AttendanceReportOut,
     TapDataOut,
     TapResponse,
 )
-from app.services.exports import build_attendance_excel, build_attendance_pdf, parse_utc_timestamp
+from app.services.exports import (
+    build_attendance_excel,
+    build_attendance_pdf,
+    build_attendance_report_excel,
+    build_sample_attendance_timesheet_excel,
+    parse_utc_timestamp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +194,56 @@ def export_attendance_excel(
     )
 
 
+@router.get("/my-export")
+def export_my_attendance_excel(
+    current_user: CurrentUser = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> Response:
+    """Export the authenticated user's own attendance logs (or all for HR) as Excel."""
+    query = supabase.table("attendance_logs").select("*")
+    if not current_user.is_hr:
+        query = query.in_("employee_id", _employee_id_candidates(current_user))
+    res = query.order("timestamp", desc=True).execute()
+    logs = getattr(res, "data", None) or []
+    xlsx_bytes = build_attendance_excel(logs)
+    filename = f"my_attendance_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete("/logs/{log_id}")
+def delete_attendance_log(
+    log_id: int,
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, Any]:
+    """Delete a single attendance tap log by ID (HR only)."""
+    res = supabase.table("attendance_logs").delete().eq("id", log_id).execute()
+    deleted = getattr(res, "data", None) or []
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attendance log not found.",
+        )
+    return {"status": "deleted", "id": log_id}
+
+
+@router.get("/sample-timesheet")
+def download_sample_timesheet(
+    _hr: CurrentUser = Depends(require_hr),
+) -> Response:
+    """Download a sample Excel (.xlsx) timesheet for testing AI attendance analysis."""
+    xlsx_bytes = build_sample_attendance_timesheet_excel()
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="sample_attendance_timesheet.xlsx"'},
+    )
+
+
 @router.post("/upload", response_model=AttendanceReportBatchResponse)
 async def upload_attendance_timesheet(
     file: UploadFile = File(...),
@@ -256,6 +313,35 @@ async def upload_attendance_timesheet(
     )
 
 
+@router.get("/batches", response_model=list[AttendanceBatchSummaryOut])
+def list_attendance_batches(
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> list[AttendanceBatchSummaryOut]:
+    """List past AI attendance report batches ordered newest first (HR only)."""
+    res = (
+        supabase.table("attendance_reports")
+        .select("batch_id, created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    batches: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        bid = str(row.get("batch_id") or "")
+        if not bid:
+            continue
+        if bid not in batches:
+            batches[bid] = {
+                "batch_id": bid,
+                "created_at": row.get("created_at"),
+                "employee_count": 1,
+            }
+        else:
+            batches[bid]["employee_count"] += 1
+    return [AttendanceBatchSummaryOut(**item) for item in list(batches.values())[:20]]
+
+
 @router.get("/reports", response_model=AttendanceReportBatchResponse)
 def get_attendance_reports(
     batch_id: uuid.UUID | None = Query(default=None),
@@ -270,6 +356,25 @@ def get_attendance_reports(
     return AttendanceReportBatchResponse(
         batch_id=resolved_batch_id,
         reports=[AttendanceReportOut(**row) for row in rows],
+    )
+
+
+@router.get("/reports/excel")
+def download_attendance_reports_excel(
+    batch_id: uuid.UUID | None = Query(default=None),
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> Response:
+    """Generate and stream a styled Excel (.xlsx) of the requested or latest attendance report batch."""
+    _resolved_batch_id, rows = _fetch_report_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
+    xlsx_bytes = build_attendance_report_excel(rows)
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="attendance_report.xlsx"'},
     )
 
 

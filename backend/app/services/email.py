@@ -7,6 +7,14 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def get_email_mode() -> str:
+    """Return 'smtp' when SMTP credentials are configured, else 'console'."""
+    settings = get_settings()
+    if settings.SMTP_HOST and settings.SMTP_USER:
+        return "smtp"
+    return "console"
+
+
 def send_interview_email(to_email: str, subject: str, body: str) -> dict[str, str]:
     """Send interview invitation via SMTP when configured, else log cleanly to console."""
     settings = get_settings()

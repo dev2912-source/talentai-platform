@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  Activity,
   AlertCircle,
   BookOpen,
   Database,
@@ -11,13 +12,19 @@ import {
   Loader2,
   MessageSquare,
   Save,
+  Search,
+  Send,
+  Sparkles,
   Trash2,
+  UserPlus,
   Users,
+  X,
 } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
 import { ApiError, apiFetch } from "@/lib/api";
 import type {
+  ChatResponse,
   FaqOut,
   KbOverviewResponse,
   PolicyOut,
@@ -44,23 +51,54 @@ function KnowledgeBaseContent() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Policy form state
+  // Policy form & filter state
   const [editingPolicyId, setEditingPolicyId] = useState<string | null>(null);
   const [policyTitle, setPolicyTitle] = useState("");
   const [policyContent, setPolicyContent] = useState("");
   const [savingPolicy, setSavingPolicy] = useState(false);
   const [policyError, setPolicyError] = useState<string | null>(null);
+  const [confirmDeletePolicyId, setConfirmDeletePolicyId] = useState<string | null>(null);
   const [deletingPolicyId, setDeletingPolicyId] = useState<string | null>(null);
+  const [policySearch, setPolicySearch] = useState("");
   const policyFormRef = useRef<HTMLDivElement>(null);
 
-  // FAQ form state
+  // FAQ form & filter state
   const [editingFaqId, setEditingFaqId] = useState<string | null>(null);
   const [faqQuestion, setFaqQuestion] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
   const [savingFaq, setSavingFaq] = useState(false);
   const [faqError, setFaqError] = useState<string | null>(null);
+  const [confirmDeleteFaqId, setConfirmDeleteFaqId] = useState<string | null>(null);
   const [deletingFaqId, setDeletingFaqId] = useState<string | null>(null);
+  const [faqSearch, setFaqSearch] = useState("");
   const faqFormRef = useRef<HTMLDivElement>(null);
+
+  // Employee directory search, filter, add & edit state
+  const [empSearch, setEmpSearch] = useState("");
+  const [empDeptFilter, setEmpDeptFilter] = useState("ALL");
+  const [empActionError, setEmpActionError] = useState<string | null>(null);
+
+  const [editingEmp, setEditingEmp] = useState<UserProfileOut | null>(null);
+  const [editEmpDept, setEditEmpDept] = useState("");
+  const [editEmpSalary, setEditEmpSalary] = useState("50000");
+  const [editEmpLeave, setEditEmpLeave] = useState("10");
+  const [editEmpAttendance, setEditEmpAttendance] = useState("100");
+  const [savingEmpEdit, setSavingEmpEdit] = useState(false);
+
+  const [showAddEmpModal, setShowAddEmpModal] = useState(false);
+  const [newEmpUsername, setNewEmpUsername] = useState("");
+  const [newEmpEmail, setNewEmpEmail] = useState("");
+  const [newEmpPassword, setNewEmpPassword] = useState("");
+  const [newEmpDept, setNewEmpDept] = useState("Engineering");
+  const [newEmpSalary, setNewEmpSalary] = useState("65000");
+  const [newEmpLeave, setNewEmpLeave] = useState("12");
+  const [creatingEmp, setCreatingEmp] = useState(false);
+
+  // Test AI Knowledge Base simulator state
+  const [testQuestion, setTestQuestion] = useState("");
+  const [testAnswer, setTestAnswer] = useState<string | null>(null);
+  const [testingAi, setTestingAi] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
 
   const loadOverview = useCallback(async () => {
     if (!token) {
@@ -129,6 +167,15 @@ function KnowledgeBaseContent() {
     });
   }
 
+  function startEditEmployee(emp: UserProfileOut) {
+    setEditingEmp(emp);
+    setEditEmpDept(emp.department);
+    setEditEmpSalary(String(emp.salary));
+    setEditEmpLeave(String(emp.leave_balance));
+    setEditEmpAttendance(String(emp.attendance_score));
+    setEmpActionError(null);
+  }
+
   async function handlePolicySubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!token) return;
@@ -187,6 +234,7 @@ function KnowledgeBaseContent() {
         token,
       );
       setPolicies((prev) => prev.filter((p) => p.id !== policyId));
+      setConfirmDeletePolicyId(null);
       if (editingPolicyId === policyId) {
         resetPolicyForm();
       }
@@ -257,6 +305,7 @@ function KnowledgeBaseContent() {
         token,
       );
       setFaqs((prev) => prev.filter((f) => f.id !== faqId));
+      setConfirmDeleteFaqId(null);
       if (editingFaqId === faqId) {
         resetFaqForm();
       }
@@ -268,6 +317,150 @@ function KnowledgeBaseContent() {
       setDeletingFaqId(null);
     }
   }
+
+  async function handleSaveEmployeeEdit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!token || !editingEmp || savingEmpEdit) return;
+    setSavingEmpEdit(true);
+    setEmpActionError(null);
+    try {
+      const updated = await apiFetch<UserProfileOut>(
+        `/api/kb/employees/${editingEmp.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            department: editEmpDept.trim() || "General",
+            salary: Math.max(0, Number(editEmpSalary) || 0),
+            leave_balance: Math.max(0, Number.parseInt(editEmpLeave, 10) || 0),
+            attendance_score: Math.max(
+              0,
+              Math.min(100, Number.parseInt(editEmpAttendance, 10) || 0),
+            ),
+          }),
+        },
+        token,
+      );
+      setEmployees((prev) =>
+        prev.map((emp) => (emp.id === updated.id ? updated : emp)),
+      );
+      setEditingEmp(null);
+    } catch (err) {
+      setEmpActionError(
+        err instanceof ApiError ? err.detail : "Unable to update employee.",
+      );
+    } finally {
+      setSavingEmpEdit(false);
+    }
+  }
+
+  async function handleCreateEmployee(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!token || creatingEmp) return;
+    setCreatingEmp(true);
+    setEmpActionError(null);
+    try {
+      const created = await apiFetch<UserProfileOut>(
+        "/api/kb/employees",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            username: newEmpUsername.trim(),
+            email: newEmpEmail.trim(),
+            password: newEmpPassword,
+            department: newEmpDept.trim() || "Engineering",
+            salary: Math.max(0, Number(newEmpSalary) || 50000),
+            leave_balance: Math.max(0, Number.parseInt(newEmpLeave, 10) || 10),
+            attendance_score: 100,
+          }),
+        },
+        token,
+      );
+      setEmployees((prev) => [created, ...prev]);
+      setNewEmpUsername("");
+      setNewEmpEmail("");
+      setNewEmpPassword("");
+      setShowAddEmpModal(false);
+    } catch (err) {
+      setEmpActionError(
+        err instanceof ApiError ? err.detail : "Unable to create employee.",
+      );
+    } finally {
+      setCreatingEmp(false);
+    }
+  }
+
+  async function handleTestAiQuery(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const q = testQuestion.trim();
+    if (!token || !q || testingAi) return;
+    setTestingAi(true);
+    setTestError(null);
+    try {
+      const res = await apiFetch<ChatResponse>(
+        "/api/kb/test-query",
+        {
+          method: "POST",
+          body: JSON.stringify({ message: q }),
+        },
+        token,
+      );
+      setTestAnswer(res.response);
+    } catch (err) {
+      setTestError(
+        err instanceof ApiError ? err.detail : "Unable to test AI response.",
+      );
+    } finally {
+      setTestingAi(false);
+    }
+  }
+
+  const avgAttendance = useMemo(() => {
+    if (employees.length === 0) return 0;
+    return Math.round(
+      employees.reduce((sum, emp) => sum + (emp.attendance_score || 0), 0) /
+        employees.length,
+    );
+  }, [employees]);
+
+  const departments = useMemo(() => {
+    const set = new Set(employees.map((e) => e.department).filter(Boolean));
+    return ["ALL", ...Array.from(set).sort()];
+  }, [employees]);
+
+  const filteredPolicies = useMemo(() => {
+    const q = policySearch.trim().toLowerCase();
+    if (!q) return policies;
+    return policies.filter(
+      (p) =>
+        p.title.toLowerCase().includes(q) ||
+        p.content.toLowerCase().includes(q),
+    );
+  }, [policies, policySearch]);
+
+  const filteredFaqs = useMemo(() => {
+    const q = faqSearch.trim().toLowerCase();
+    if (!q) return faqs;
+    return faqs.filter(
+      (f) =>
+        f.question.toLowerCase().includes(q) ||
+        f.answer.toLowerCase().includes(q),
+    );
+  }, [faqs, faqSearch]);
+
+  const filteredEmployees = useMemo(() => {
+    const q = empSearch.trim().toLowerCase();
+    return employees.filter((emp) => {
+      if (empDeptFilter !== "ALL" && emp.department !== empDeptFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        emp.username.toLowerCase().includes(q) ||
+        emp.email.toLowerCase().includes(q) ||
+        emp.department.toLowerCase().includes(q)
+      );
+    });
+  }, [empDeptFilter, empSearch, employees]);
 
   if (loading) {
     return (
@@ -300,22 +493,116 @@ function KnowledgeBaseContent() {
   }
 
   return (
-    <div className="p-2 md:p-4 max-w-7xl mx-auto space-y-8">
+    <div className="p-2 md:p-4 max-w-7xl mx-auto space-y-6 sm:space-y-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight text-slate-800">
+          <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-800">
             Knowledge Base Management
           </h2>
           <p className="text-slate-500 mt-1 text-sm">
-            Manage Company Policies and FAQs for the AI Support Agent.
+            Manage Company Policies, FAQs, and Employee HR Metrics for the AI
+            Support Agent.
           </p>
         </div>
         <div className="px-4 py-2 bg-[#f0efff] text-[#544af4] rounded-xl border border-indigo-200 flex items-center gap-2 self-start sm:self-auto">
           <Database className="w-4 h-4" />
-          <span className="text-sm font-medium">Vector DB Synced</span>
+          <span className="text-sm font-medium">Knowledge Base Live</span>
         </div>
       </div>
+
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1f48d9] flex items-center justify-center shrink-0">
+            <BookOpen className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500">Policies</p>
+            <p className="text-xl font-bold text-slate-800">{policies.length}</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#f0efff] text-[#544af4] flex items-center justify-center shrink-0">
+            <HelpCircle className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500">FAQs</p>
+            <p className="text-xl font-bold text-slate-800">{faqs.length}</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+            <Users className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500">Employees</p>
+            <p className="text-xl font-bold text-slate-800">{employees.length}</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+            <Activity className="w-5 h-5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500">Avg Attendance</p>
+            <p className="text-xl font-bold text-slate-800">{avgAttendance}%</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Test AI Knowledge Base Simulator */}
+      <section className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-[#f0efff] text-[#544af4] flex items-center justify-center">
+            <Sparkles className="w-4 h-4" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-slate-800">
+              Test AI Knowledge Base
+            </h3>
+            <p className="text-xs text-slate-500">
+              Preview how the Employee AI Assistant responds using your latest
+              policies and FAQs
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleTestAiQuery} className="flex flex-col sm:flex-row gap-2.5">
+          <input
+            type="text"
+            value={testQuestion}
+            onChange={(e) => setTestQuestion(e.target.value)}
+            disabled={testingAi}
+            placeholder="Ask a test question (e.g. What is our remote work policy?)..."
+            className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-accent focus:bg-white"
+          />
+          <button
+            type="submit"
+            disabled={testingAi || !testQuestion.trim()}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#544af4] hover:bg-[#4338ca] text-white text-sm font-medium rounded-xl transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+          >
+            {testingAi ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
+            <span>{testingAi ? "Testing..." : "Test Query"}</span>
+          </button>
+        </form>
+
+        {testError && (
+          <p className="text-xs text-red-600">{testError}</p>
+        )}
+        {testAnswer && (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+            {testAnswer}
+          </div>
+        )}
+      </section>
 
       {/* 2-Column Policies & FAQs Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
@@ -412,24 +699,34 @@ function KnowledgeBaseContent() {
           </div>
 
           {/* Existing Policies */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-slate-500" />
                 Existing Policies
+                <span className="text-xs font-medium text-slate-400">
+                  ({filteredPolicies.length})
+                </span>
               </h3>
-              <span className="text-xs font-medium text-slate-400">
-                {policies.length}
-              </span>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={policySearch}
+                  onChange={(e) => setPolicySearch(e.target.value)}
+                  placeholder="Search policies..."
+                  className="w-44 pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-accent focus:bg-white"
+                />
+              </div>
             </div>
 
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-              {policies.length === 0 ? (
+              {filteredPolicies.length === 0 ? (
                 <div className="text-center p-6 text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                   No policies found.
                 </div>
               ) : (
-                policies.map((policy) => (
+                filteredPolicies.map((policy) => (
                   <div
                     key={policy.id}
                     className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 hover:border-[#1f48d9]/40 transition-colors"
@@ -457,20 +754,35 @@ function KnowledgeBaseContent() {
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
-                        <button
-                          type="button"
-                          disabled={deletingPolicyId === policy.id}
-                          onClick={() => handleDeletePolicy(policy.id)}
-                          title="Delete policy"
-                          aria-label={`Delete ${policy.title}`}
-                          className="p-2 bg-white border border-slate-200 rounded-lg hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors text-slate-500 cursor-pointer disabled:opacity-50"
-                        >
-                          {deletingPolicyId === policy.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
+                        {confirmDeletePolicyId === policy.id ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={deletingPolicyId === policy.id}
+                              onClick={() => void handleDeletePolicy(policy.id)}
+                              className="px-2 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg cursor-pointer"
+                            >
+                              {deletingPolicyId === policy.id ? "..." : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeletePolicyId(null)}
+                              className="px-2 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-lg cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeletePolicyId(policy.id)}
+                            title="Delete policy"
+                            aria-label={`Delete ${policy.title}`}
+                            className="p-2 bg-white border border-slate-200 rounded-lg hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors text-slate-500 cursor-pointer"
+                          >
                             <Trash2 className="w-4 h-4" />
-                          )}
-                        </button>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -573,24 +885,34 @@ function KnowledgeBaseContent() {
           </div>
 
           {/* Existing FAQs */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2">
                 <MessageSquare className="w-5 h-5 text-slate-500" />
                 Existing FAQs
+                <span className="text-xs font-medium text-slate-400">
+                  ({filteredFaqs.length})
+                </span>
               </h3>
-              <span className="text-xs font-medium text-slate-400">
-                {faqs.length}
-              </span>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={faqSearch}
+                  onChange={(e) => setFaqSearch(e.target.value)}
+                  placeholder="Search FAQs..."
+                  className="w-44 pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-accent focus:bg-white"
+                />
+              </div>
             </div>
 
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-              {faqs.length === 0 ? (
+              {filteredFaqs.length === 0 ? (
                 <div className="text-center p-6 text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                   No FAQs found.
                 </div>
               ) : (
-                faqs.map((faq) => (
+                filteredFaqs.map((faq) => (
                   <div
                     key={faq.id}
                     className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 hover:border-[#544af4]/40 transition-colors"
@@ -619,20 +941,35 @@ function KnowledgeBaseContent() {
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
-                        <button
-                          type="button"
-                          disabled={deletingFaqId === faq.id}
-                          onClick={() => handleDeleteFaq(faq.id)}
-                          title="Delete FAQ"
-                          aria-label={`Delete ${faq.question}`}
-                          className="p-2 bg-white border border-slate-200 rounded-lg hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors text-slate-500 cursor-pointer disabled:opacity-50"
-                        >
-                          {deletingFaqId === faq.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
+                        {confirmDeleteFaqId === faq.id ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={deletingFaqId === faq.id}
+                              onClick={() => void handleDeleteFaq(faq.id)}
+                              className="px-2 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg cursor-pointer"
+                            >
+                              {deletingFaqId === faq.id ? "..." : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteFaqId(null)}
+                              className="px-2 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-lg cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteFaqId(faq.id)}
+                            title="Delete FAQ"
+                            aria-label={`Delete ${faq.question}`}
+                            className="p-2 bg-white border border-slate-200 rounded-lg hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors text-slate-500 cursor-pointer"
+                          >
                             <Trash2 className="w-4 h-4" />
-                          )}
-                        </button>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -645,59 +982,105 @@ function KnowledgeBaseContent() {
 
       {/* Employee Directory */}
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-5 border-b border-slate-200 flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <Users className="w-5 h-5 text-[#544af4]" />
             <h3 className="font-semibold text-lg text-slate-800">
               Employee Directory
             </h3>
+            <span className="text-xs font-medium text-slate-400">
+              ({filteredEmployees.length})
+            </span>
           </div>
-          <span className="text-xs font-medium text-slate-500">
-            {employees.length}{" "}
-            {employees.length === 1 ? "employee" : "employees"}
-          </span>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={empSearch}
+                onChange={(e) => setEmpSearch(e.target.value)}
+                placeholder="Search employees..."
+                className="w-44 sm:w-52 pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-accent focus:bg-white"
+              />
+            </div>
+
+            <select
+              value={empDeptFilter}
+              onChange={(e) => setEmpDeptFilter(e.target.value)}
+              aria-label="Filter by department"
+              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              {departments.map((dept) => (
+                <option key={dept} value={dept}>
+                  {dept === "ALL" ? "All Departments" : dept}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEmpActionError(null);
+                setShowAddEmpModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#544af4] hover:bg-[#4338ca] text-white text-xs font-medium transition-colors cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Add Employee</span>
+            </button>
+          </div>
         </div>
 
-        {employees.length === 0 ? (
+        {empActionError && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs">
+            {empActionError}
+          </div>
+        )}
+
+        {filteredEmployees.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-500">
-            No employee profiles registered yet.
+            No employee profiles match your search.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
                 <tr>
-                  <th className="px-6 py-3.5 font-semibold">Employee</th>
-                  <th className="px-6 py-3.5 font-semibold">Department</th>
-                  <th className="px-6 py-3.5 font-semibold">Salary</th>
-                  <th className="px-6 py-3.5 font-semibold">Leave Balance</th>
-                  <th className="px-6 py-3.5 font-semibold">
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold">Employee</th>
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold">Department</th>
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold">Salary</th>
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold">Leave Balance</th>
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold">
                     Attendance Score
+                  </th>
+                  <th className="px-4 sm:px-6 py-3.5 font-semibold text-right">
+                    Action
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {employees.map((emp) => (
+                {filteredEmployees.map((emp) => (
                   <tr
                     key={emp.id}
                     className="hover:bg-slate-50/80 transition-colors"
                   >
-                    <td className="px-6 py-4">
+                    <td className="px-4 sm:px-6 py-4">
                       <div className="font-medium text-slate-800">
                         {emp.username}
                       </div>
                       <div className="text-xs text-slate-400">{emp.email}</div>
                     </td>
-                    <td className="px-6 py-4 text-slate-600">
+                    <td className="px-4 sm:px-6 py-4 text-slate-600 whitespace-nowrap">
                       {emp.department}
                     </td>
-                    <td className="px-6 py-4 text-slate-700 font-medium">
+                    <td className="px-4 sm:px-6 py-4 text-slate-700 font-medium whitespace-nowrap">
                       ${Number(emp.salary).toLocaleString()}
                     </td>
-                    <td className="px-6 py-4 text-slate-600">
+                    <td className="px-4 sm:px-6 py-4 text-slate-600 whitespace-nowrap">
                       {emp.leave_balance} days
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
                           emp.attendance_score >= 85
@@ -710,6 +1093,16 @@ function KnowledgeBaseContent() {
                         {emp.attendance_score}%
                       </span>
                     </td>
+                    <td className="px-4 sm:px-6 py-4 text-right whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={() => startEditEmployee(emp)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium transition-colors cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                        Edit
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -717,6 +1110,236 @@ function KnowledgeBaseContent() {
           </div>
         )}
       </section>
+
+      {/* Edit Employee Modal */}
+      {editingEmp && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setEditingEmp(null)}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-slate-800">
+                  Edit {editingEmp.username}
+                </h3>
+                <p className="text-xs text-slate-400">{editingEmp.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEmp(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEmployeeEdit} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editEmpDept}
+                  onChange={(e) => setEditEmpDept(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Salary ($)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={editEmpSalary}
+                    onChange={(e) => setEditEmpSalary(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Leave (Days)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={editEmpLeave}
+                    onChange={(e) => setEditEmpLeave(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Attendance (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    required
+                    value={editEmpAttendance}
+                    onChange={(e) => setEditEmpAttendance(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingEmp(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEmpEdit}
+                  className="px-4 py-2 rounded-xl bg-[#544af4] text-white text-xs font-medium cursor-pointer disabled:opacity-60"
+                >
+                  {savingEmpEdit ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Employee Modal */}
+      {showAddEmpModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setShowAddEmpModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-800">
+                Onboard New Employee
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAddEmpModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateEmployee} className="p-6 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    value={newEmpUsername}
+                    onChange={(e) => setNewEmpUsername(e.target.value)}
+                    placeholder="priya"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Department *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newEmpDept}
+                    onChange={(e) => setNewEmpDept(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Email *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={newEmpEmail}
+                  onChange={(e) => setNewEmpEmail(e.target.value)}
+                  placeholder="priya@company.com"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Temporary Password * (min 6 chars)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={newEmpPassword}
+                  onChange={(e) => setNewEmpPassword(e.target.value)}
+                  placeholder="••••••"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Salary ($)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={newEmpSalary}
+                    onChange={(e) => setNewEmpSalary(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Leave Balance (Days)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={newEmpLeave}
+                    onChange={(e) => setNewEmpLeave(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddEmpModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingEmp}
+                  className="px-4 py-2 rounded-xl bg-[#544af4] text-white text-xs font-medium cursor-pointer disabled:opacity-60"
+                >
+                  {creatingEmp ? "Creating..." : "Create Employee"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

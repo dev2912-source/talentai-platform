@@ -1,9 +1,10 @@
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
-from langchain_openai import ChatOpenAI
+import requests
 
 from app.config import get_settings
 
@@ -34,25 +35,109 @@ def as_runnable_llm(llm: Any, *, raw_content: bool = False) -> Runnable:
     return RunnableLambda(_invoke)
 
 
-def get_llm(temperature: float = 0.2) -> ChatOpenAI:
-    """Create a ChatOpenAI instance pointed at OpenRouter."""
+def _to_openai_messages(messages: Any) -> list[dict[str, str]]:
+    """Convert LangChain PromptValue, BaseMessage list, tuples, or dicts to NIM messages."""
+    raw = messages.to_messages() if hasattr(messages, "to_messages") else messages
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+
+    role_map = {
+        "system": "system",
+        "human": "user",
+        "user": "user",
+        "ai": "assistant",
+        "assistant": "assistant",
+    }
+    formatted: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            role = role_map.get(str(item.get("role", "user")).lower(), "user")
+            formatted.append({"role": role, "content": str(item.get("content", ""))})
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            role = role_map.get(str(item[0]).lower(), "user")
+            formatted.append({"role": role, "content": str(item[1])})
+        else:
+            msg_type = getattr(item, "type", "user")
+            role = role_map.get(str(msg_type).lower(), "user")
+            content = getattr(item, "content", str(item))
+            formatted.append({"role": role, "content": str(content)})
+    return formatted
+
+
+class NvidiaNIMChatClient:
+    """Direct HTTP client for NVIDIA NIM /v1/chat/completions."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        temperature: float = 0.5,
+        max_tokens: int = 2048,
+    ) -> None:
+        self.api_key = api_key
+        self.invoke_url = f"{base_url.rstrip('/')}/chat/completions"
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    def invoke(self, messages: Any) -> SimpleNamespace:
+        """Send a non-streaming chat completion request to NVIDIA NIM."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+            "temperature": self.temperature,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "seed": 0,
+            "messages": _to_openai_messages(messages),
+        }
+        response = requests.post(
+            self.invoke_url,
+            headers=headers,
+            json=payload,
+            stream=False,
+            timeout=30,
+        )
+        if not response.ok:
+            raise RuntimeError(
+                f"NVIDIA NIM API error {response.status_code}: {response.text[:300]}"
+            )
+        data = response.json()
+        choices = data.get("choices") or []
+        content = ""
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+        return SimpleNamespace(content=content)
+
+
+def get_llm(temperature: float = 0.2, model_override: str | None = None) -> NvidiaNIMChatClient:
+    """Create an NVIDIA NIM chat client configured from Settings."""
     settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
-    base_url = settings.OPENROUTER_BASE_URL
-    model = settings.OPENROUTER_MODEL
+    api_key = settings.NVIDIA_API_KEY
+    base_url = settings.NVIDIA_BASE_URL
+    model = model_override or settings.NVIDIA_MODEL
 
     if not api_key:
         logger.warning(
-            "OPENROUTER_API_KEY is not set. LLM calls will fail. "
+            "NVIDIA_API_KEY is not set. LLM calls will fail. "
             "Set it in your .env or environment."
         )
 
-    return ChatOpenAI(
+    return NvidiaNIMChatClient(
         api_key=api_key or "not-configured",
         base_url=base_url,
         model=model,
         temperature=temperature,
-        max_tokens=4096,
+        max_tokens=2048,
     )
 
 

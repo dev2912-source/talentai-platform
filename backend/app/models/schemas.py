@@ -76,6 +76,33 @@ class JobDetailResponse(BaseModel):
 
     job: JobPostingOut
     candidates: list[CandidateOut] = Field(default_factory=list)
+    email_mode: str = "console"
+
+
+class JobPostingUpdateIn(BaseModel):
+    """Payload for updating a draft or pending_approval job posting."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(..., min_length=1)
+    department: str = Field("Engineering", min_length=1)
+    description: str = Field(..., min_length=1)
+    required_skills: str = "Not specified"
+    experience_years: int = Field(0, ge=0)
+
+
+class ManualCandidateIn(BaseModel):
+    """Payload for manually adding a candidate to a job posting."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1)
+    email: str | None = None
+    match_score: float = Field(75.0, ge=0.0, le=100.0)
+    matched_skills: str = ""
+    interview_slot: str = "TBD"
+    email_subject: str = ""
+    email_body: str = ""
 
 
 class CandidateDecisionIn(BaseModel):
@@ -83,6 +110,7 @@ class CandidateDecisionIn(BaseModel):
 
     candidate_id: str
     approved: bool = True
+    email: str | None = None
     email_subject: str = ""
     email_body: str = ""
     interview_slot: str | None = None
@@ -101,6 +129,7 @@ class ApproveJobResponse(BaseModel):
     status: str = "approved"
     sent_count: int = 0
     rejected_count: int = 0
+    email_mode: str = "console"
     candidates: list[CandidateOut] = Field(default_factory=list)
 
 
@@ -156,6 +185,14 @@ class AttendanceReportBatchResponse(BaseModel):
     reports: list[AttendanceReportOut] = Field(default_factory=list)
 
 
+class AttendanceBatchSummaryOut(BaseModel):
+    """Summary item for listing past AI attendance report batches."""
+
+    batch_id: str
+    created_at: str | None = None
+    employee_count: int = 0
+
+
 class PerformanceRecordOut(BaseModel):
     """Serialized AI performance review record."""
 
@@ -180,6 +217,15 @@ class PerformanceBatchResponse(BaseModel):
 
     batch_id: str | None = None
     records: list[PerformanceRecordOut] = Field(default_factory=list)
+
+
+class PerformanceBatchSummaryOut(BaseModel):
+    """Summary item for listing past AI performance review batches."""
+
+    batch_id: str
+    review_period: str = ""
+    created_at: str | None = None
+    employee_count: int = 0
 
 
 class PolicyIn(BaseModel):
@@ -238,3 +284,28 @@ class ChatResponse(BaseModel):
     """Employee support chat response payload."""
 
     response: str
+
+
+class EmployeeCreateIn(BaseModel):
+    """HR payload for onboarding a new non-HR employee account."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(..., min_length=2)
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+    department: str = Field("Engineering", min_length=1)
+    salary: float = Field(50000.0, ge=0.0)
+    leave_balance: int = Field(10, ge=0)
+    attendance_score: int = Field(100, ge=0, le=100)
+
+
+class EmployeeUpdateIn(BaseModel):
+    """HR payload for updating an employee's HR metrics."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    department: str = Field(..., min_length=1)
+    salary: float = Field(..., ge=0.0)
+    leave_balance: int = Field(..., ge=0)
+    attendance_score: int = Field(..., ge=0, le=100)

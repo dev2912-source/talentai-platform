@@ -357,3 +357,50 @@ def test_attendance_upload_returns_400_on_invalid_file_exception(client, hr_head
 def test_attendance_invalid_batch_uuid_returns_422(client, hr_headers):
     assert client.get("/api/attendance/reports?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
     assert client.get("/api/attendance/reports/pdf?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.get("/api/attendance/reports/excel?batch_id=not-a-uuid", headers=hr_headers).status_code == 422
+
+
+def test_sample_timesheet_delete_log_batches_and_report_excel(
+    client, mock_supabase, hr_headers, employee_headers
+):
+    # Sample timesheet download (HR only)
+    assert client.get("/api/attendance/sample-timesheet", headers=employee_headers).status_code == 403
+    sample_res = client.get("/api/attendance/sample-timesheet", headers=hr_headers)
+    assert sample_res.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(sample_res.content))
+    assert "Timesheet" in wb.sheetnames
+
+    # Delete log (HR only)
+    mock_supabase.tables["attendance_logs"].append({
+        "id": 99,
+        "employee_id": "EMP-TEST",
+        "timestamp": "2026-11-26T09:00:00+00:00",
+        "device_type": "rfid_scanner",
+        "location": "Main Gate",
+        "tap_type": "IN",
+    })
+    assert client.delete("/api/attendance/logs/99", headers=employee_headers).status_code == 403
+    del_res = client.delete("/api/attendance/logs/99", headers=hr_headers)
+    assert del_res.status_code == 200
+    assert mock_supabase.tables["attendance_logs"] == []
+
+    # Batches list & report excel
+    batch_id = "13131313-1313-1313-1313-131313131313"
+    mock_supabase.tables["attendance_reports"].append({
+        "id": "14141414-1414-1414-1414-141414141414",
+        "batch_id": batch_id,
+        "employee_name": "Alice Johnson",
+        "total_hours": 40.0,
+        "leaves_taken": 0,
+        "ai_score": 96,
+        "ai_feedback": "Excellent punctuality.",
+        "created_at": "2026-11-26T10:00:00+00:00",
+    })
+    batches_res = client.get("/api/attendance/batches", headers=hr_headers)
+    assert batches_res.status_code == 200
+    assert len(batches_res.json()) == 1
+    assert batches_res.json()[0]["employee_count"] == 1
+
+    excel_res = client.get(f"/api/attendance/reports/excel?batch_id={batch_id}", headers=hr_headers)
+    assert excel_res.status_code == 200
+    assert "spreadsheetml" in excel_res.headers["content-type"]

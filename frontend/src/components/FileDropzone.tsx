@@ -157,7 +157,7 @@ export function FileDropzone({
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-8 text-center transition-all duration-200 ${
+        className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-5 sm:p-8 text-center transition-all duration-200 ${
           disabled
             ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed"
             : isDragging

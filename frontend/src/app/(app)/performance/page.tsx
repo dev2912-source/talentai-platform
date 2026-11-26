@@ -7,6 +7,7 @@ import {
   AlertCircle,
   ArrowRight,
   Bot,
+  Download,
   FileSpreadsheet,
   Loader2,
   TrendingUp,
@@ -14,7 +15,7 @@ import {
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
 import { FileDropzone } from "@/components/FileDropzone";
-import { ApiError, apiFetch } from "@/lib/api";
+import { ApiError, apiDownloadBlob, apiFetch, triggerBlobDownload } from "@/lib/api";
 import type { PerformanceBatchResponse } from "@/lib/types";
 
 function PerformanceDashboardContent() {
@@ -24,7 +25,26 @@ function PerformanceDashboardContent() {
   const [reviewPeriod, setReviewPeriod] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [downloadingSample, setDownloadingSample] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function handleDownloadSampleKpi() {
+    if (!token || downloadingSample) return;
+    setError(null);
+    setDownloadingSample(true);
+    try {
+      const blob = await apiDownloadBlob("/api/performance/sample-kpi", token);
+      triggerBlobDownload(blob, "sample_performance_kpi.xlsx");
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.detail
+          : "Failed to download sample KPI sheet.",
+      );
+    } finally {
+      setDownloadingSample(false);
+    }
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -81,7 +101,7 @@ function PerformanceDashboardContent() {
         <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-[#1f48d9] to-[#544af4] flex items-center justify-center shadow-lg shadow-[#1f48d9]/20">
           <TrendingUp className="w-8 h-8 text-white" />
         </div>
-        <h1 className="text-3xl font-bold tracking-tight text-slate-800 mb-2">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-800 mb-2">
           Performance Review Agent
         </h1>
         <p className="text-slate-500 text-sm">
@@ -101,19 +121,35 @@ function PerformanceDashboardContent() {
 
       {/* Upload Card */}
       <div className="flex justify-center">
-        <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm w-full max-w-2xl">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1f48d9] flex items-center justify-center border border-blue-100">
-              <FileSpreadsheet className="w-5 h-5" />
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 lg:p-8 shadow-sm w-full max-w-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1f48d9] flex items-center justify-center border border-blue-100">
+                <FileSpreadsheet className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold text-slate-800">
+                  Upload Performance Data
+                </h2>
+                <p className="text-sm text-slate-400">
+                  Supported formats: .xlsx, .xls
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-xl font-semibold text-slate-800">
-                Upload Performance Data
-              </h2>
-              <p className="text-sm text-slate-400">
-                Supported formats: .xlsx, .xls
-              </p>
-            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleDownloadSampleKpi()}
+              disabled={downloadingSample}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#1f48d9] border border-blue-200 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {downloadingSample ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span>Sample KPI Sheet (.xlsx)</span>
+            </button>
           </div>
 
           {error && (

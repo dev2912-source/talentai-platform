@@ -331,6 +331,15 @@ class FakeStorageBucket:
     def download(self, path: str) -> bytes:
         return self._buckets.get(self._bucket_name, {})[path]
 
+    def remove(self, paths: list[str]) -> list[dict[str, str]]:
+        bucket = self._buckets.setdefault(self._bucket_name, {})
+        removed = []
+        for path in paths:
+            if path in bucket:
+                del bucket[path]
+                removed.append({"name": path})
+        return removed
+
 
 class FakeStorage:
     def __init__(self):

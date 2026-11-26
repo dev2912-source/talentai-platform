@@ -26,11 +26,11 @@ The platform modernizes end-to-end workforce operations:
 |  TypeScript · Tailwind v4 · UI    |                                  |  Pydantic · LangGraph · ReportLab |
 +-----------------------------------+                                  +-----------------------------------+
                  |                                                                 |             |
-                 | Supabase JS Auth                                  Service Role  |             | OpenRouter API
+                 | Supabase JS Auth                                  Service Role  |             | NVIDIA NIM API
                  v                                                                 v             v
 +----------------------------------------------------------------------------------+   +-------------------+
-|                                     Supabase                                     |   |   OpenRouter /    |
-|  Auth (JWT) · PostgreSQL + pgvector (match_resume_chunks) · Storage (hr-uploads) |   |  Jina Embeddings  |
+|                                     Supabase                                     |   |    NVIDIA NIM /   |
+|  Auth (JWT) · PostgreSQL + pgvector (match_resume_chunks) · Storage (hr-uploads) |   |  NV-EmbedQA-E5    |
 +----------------------------------------------------------------------------------+   +-------------------+
 ```
 
@@ -108,7 +108,7 @@ Deploy TalentAI for **$0/month** using Supabase, Render, and Vercel:
 [ Frontend: Next.js ]  ──>  Vercel (Hobby Tier - Free)
 [ Backend: FastAPI  ]  ──>  Render (Web Service - Free Tier)
 [ Database/Storage  ]  ──>  Supabase (Free Tier: Postgres + pgvector + Auth + Storage)
-[ AI / Embeddings   ]  ──>  OpenRouter (Free models / initial credits)
+[ AI / Embeddings   ]  ──>  NVIDIA NIM (Free developer credits)
 ```
 
 ### Step 1: Set Up Supabase (2 mins)
@@ -146,8 +146,9 @@ git push -u origin main
    | `SUPABASE_URL` | Your Supabase Project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | Your Supabase `service_role` secret key |
    | `SUPABASE_ANON_KEY` | Your Supabase `anon` public key |
-   | `OPENROUTER_API_KEY` | Your OpenRouter API Key |
-   | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` |
+   | `NVIDIA_API_KEY` | Your NVIDIA NIM API Key (`nvapi-...`) |
+   | `NVIDIA_MODEL` | `z-ai/glm-5.3-flash` |
+   | `NVIDIA_EMBEDDING_MODEL` | `nvidia/nv-embedqa-e5-v5` |
    | `FRONTEND_ORIGINS` | `*` *(or your Vercel URL once deployed)* |
 5. Click **Create Web Service**.
 6. Copy your public backend URL once live (e.g., `https://talentai-backend.onrender.com`).
@@ -176,14 +177,14 @@ git push -u origin main
 - Python 3.11+
 - Node.js 20+
 - Active Supabase project (or local Docker Supabase instance)
-- OpenRouter API Key
+- NVIDIA NIM API Key (`build.nvidia.com`)
 
 ### 2. Environment Variables
 
 **Backend:**
 ```bash
 cp backend/.env.example backend/.env
-# Fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENROUTER_API_KEY
+# Fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, NVIDIA_API_KEY
 ```
 
 **Frontend:**
@@ -200,7 +201,7 @@ python seed.py
 
 Demo Credentials created:
 - **HR Manager:** `admin@company.com` / `admin123`
-- **Employee:** `john@company.com` / `pass123`
+- **Employee:** `rohan@company.com` / `pass123`
 
 *(The `/login` screen also includes 1-click Demo HR and Demo Employee login buttons for testing).*
 

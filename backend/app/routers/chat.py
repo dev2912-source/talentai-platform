@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
@@ -7,11 +8,34 @@ from supabase import Client
 from app.ai.support import generate_support_response
 from app.db import get_supabase
 from app.deps import CurrentUser, require_employee
-from app.models.schemas import ChatRequest, ChatResponse
+from app.models.schemas import ChatRequest, ChatResponse, FaqOut, PolicyOut
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+@router.get("/kb")
+def get_employee_kb(
+    _employee: CurrentUser = Depends(require_employee),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, list[Any]]:
+    """Return read-only company policies and FAQs for authenticated employees."""
+    policies_res = (
+        supabase.table("company_policies")
+        .select("*")
+        .order("last_updated", desc=True)
+        .execute()
+    )
+    faqs_res = (
+        supabase.table("faqs")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    policies = [PolicyOut(**row) for row in (getattr(policies_res, "data", None) or [])]
+    faqs = [FaqOut(**row) for row in (getattr(faqs_res, "data", None) or [])]
+    return {"policies": policies, "faqs": faqs}
 
 
 @router.post("", response_model=ChatResponse)

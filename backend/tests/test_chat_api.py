@@ -197,3 +197,125 @@ def test_kb_and_chat_reject_whitespace_only_strings(client, hr_headers, employee
         json={"message": "   "},
     ).status_code == 422
 
+
+def test_kb_create_update_employee_and_test_query(
+    client, mock_supabase, hr_headers, employee_headers, monkeypatch
+):
+    from types import SimpleNamespace
+
+    # Employee cannot access HR KB endpoints
+    assert client.post(
+        "/api/kb/employees",
+        headers=employee_headers,
+        json={"username": "priya", "email": "priya@company.com", "password": "password123"},
+    ).status_code == 403
+
+    create_res = client.post(
+        "/api/kb/employees",
+        headers=hr_headers,
+        json={
+            "username": "priya",
+            "email": "priya@company.com",
+            "password": "password123",
+            "department": "Product",
+            "salary": 92000.0,
+            "leave_balance": 15,
+            "attendance_score": 98,
+        },
+    )
+    assert create_res.status_code == 201
+    created = create_res.json()
+    assert created["is_hr"] is False
+    assert created["department"] == "Product"
+
+    # Update employee metrics (use valid UUID)
+    emp_uuid = "22222222-2222-2222-2222-222222222222"
+    patch_res = client.patch(
+        f"/api/kb/employees/{emp_uuid}",
+        headers=hr_headers,
+        json={
+            "department": "AI Engineering",
+            "salary": 99000.0,
+            "leave_balance": 18,
+            "attendance_score": 97,
+        },
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["department"] == "AI Engineering"
+    assert patch_res.json()["salary"] == 99000.0
+
+    # Test KB AI query endpoint
+    class _FakeSupportLLM:
+        def invoke(self, _messages):
+            return SimpleNamespace(content="Remote work is allowed 2 days per week.")
+
+    monkeypatch.setattr(support_ai, "get_llm", lambda temperature=0.3: _FakeSupportLLM())
+    test_res = client.post(
+        "/api/kb/test-query",
+        headers=hr_headers,
+        json={"message": "What is the remote work policy?"},
+    )
+    assert test_res.status_code == 200
+    assert "Remote work" in test_res.json()["response"]
+
+
+def test_employee_self_service_kb_my_export_and_my_reviews(
+    client, mock_supabase, hr_headers, employee_headers
+):
+    # Employee KB read-only endpoint
+    assert client.get("/api/chat/kb", headers=hr_headers).status_code == 403
+    mock_supabase.tables["company_policies"].append({
+        "id": "p1",
+        "title": "Remote Policy",
+        "content": "2 days remote",
+        "last_updated": "2026-11-26T00:00:00+00:00",
+    })
+    kb_res = client.get("/api/chat/kb", headers=employee_headers)
+    assert kb_res.status_code == 200
+    assert len(kb_res.json()["policies"]) == 1
+
+    # Employee my-export endpoint
+    mock_supabase.tables["attendance_logs"].extend([
+        {
+            "id": 1,
+            "employee_id": "EMP-22222222",
+            "timestamp": "2026-11-26T09:00:00+00:00",
+            "device_type": "rfid_scanner",
+            "location": "Gate A",
+            "tap_type": "IN",
+        },
+        {
+            "id": 2,
+            "employee_id": "EMP-OTHER",
+            "timestamp": "2026-11-26T09:00:00+00:00",
+            "device_type": "rfid_scanner",
+            "location": "Gate B",
+            "tap_type": "IN",
+        },
+    ])
+    exp_res = client.get("/api/attendance/my-export", headers=employee_headers)
+    assert exp_res.status_code == 200
+    assert "spreadsheetml" in exp_res.headers["content-type"]
+
+    # Employee my-reviews endpoint
+    assert client.get("/api/performance/my-reviews", headers=hr_headers).status_code == 403
+    mock_supabase.tables["performance_records"].append({
+        "id": "rev-1",
+        "batch_id": "b1",
+        "employee_id": "22222222-2222-2222-2222-222222222222",
+        "employee_name": "john",
+        "employee_email": "john@company.com",
+        "department": "Engineering",
+        "review_period": "Q4 2026",
+        "kpi_data": "Tasks: 46/45",
+        "performance_score": 94,
+        "kpi_achievement_percent": 102.0,
+        "strengths": "Great delivery",
+        "areas_for_improvement": "None",
+        "recommended_actions": "Lead sprint",
+    })
+    rev_res = client.get("/api/performance/my-reviews", headers=employee_headers)
+    assert rev_res.status_code == 200
+    assert len(rev_res.json()) == 1
+    assert rev_res.json()[0]["performance_score"] == 94
+

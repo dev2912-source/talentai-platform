@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -21,7 +20,7 @@ const DEMO_HR_EMAIL =
 const DEMO_HR_PASSWORD =
   process.env.NEXT_PUBLIC_DEMO_HR_PASSWORD || "admin123";
 const DEMO_EMP_EMAIL =
-  process.env.NEXT_PUBLIC_DEMO_EMP_EMAIL || "john@company.com";
+  process.env.NEXT_PUBLIC_DEMO_EMP_EMAIL || "rohan@company.com";
 const DEMO_EMP_PASSWORD =
   process.env.NEXT_PUBLIC_DEMO_EMP_PASSWORD || "pass123";
 
@@ -92,16 +91,16 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4 relative overflow-hidden">
+    <div className="min-h-[100dvh] w-full flex flex-col items-center justify-center bg-background px-4 py-6 sm:p-6 relative overflow-x-hidden overflow-y-auto">
       {/* Background effects */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-accent/20 via-background to-background" />
-      <div className="absolute top-1/4 -left-64 w-96 h-96 bg-primary/20 rounded-full blur-3xl" />
-      <div className="absolute bottom-1/4 -right-64 w-96 h-96 bg-accent/10 rounded-full blur-3xl" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-accent/20 via-background to-background pointer-events-none" />
+      <div className="absolute top-1/4 -left-64 w-96 h-96 bg-primary/20 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-1/4 -right-64 w-96 h-96 bg-accent/10 rounded-full blur-3xl pointer-events-none" />
 
-      <div className="w-full max-w-md relative z-10">
-        <div className="bg-card border border-border rounded-2xl p-8 shadow-2xl backdrop-blur-xl">
-          <div className="text-center mb-8">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-chart-1 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-accent/20">
+      <div className="w-full max-w-md relative z-10 flex flex-col">
+        <div className="bg-card border border-border rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl flex flex-col gap-6">
+          <div className="flex flex-col items-center text-center">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-chart-1 flex items-center justify-center mb-4 shadow-lg shadow-accent/20">
               <div
                 className="w-6 h-6 bg-white rounded"
                 style={{
@@ -113,28 +112,12 @@ export default function LoginPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Welcome back
             </h1>
-            <p className="text-sm text-muted-foreground mt-2">
-              Enter your credentials to access TalentAI
+            <p className="text-sm text-muted-foreground mt-1.5">
+              Sign in to access TalentAI HR Intelligence
             </p>
           </div>
 
-          {/* Auth Tab Switcher */}
-          <div className="flex bg-secondary/50 rounded-lg p-1 mb-6 border border-border">
-            <Link
-              href="/login"
-              className="flex-1 text-center py-2 text-sm font-medium rounded-md bg-card text-foreground shadow shadow-black/10"
-            >
-              Login
-            </Link>
-            <Link
-              href="/signup"
-              className="flex-1 text-center py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Sign Up
-            </Link>
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             {error && (
               <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -212,24 +195,27 @@ export default function LoginPage() {
           </form>
 
           {/* 1-Click Demo Logins */}
-          <div className="mt-6 space-y-3">
-            <div className="text-xs p-3 bg-accent/5 border border-accent/15 rounded-lg text-left text-muted-foreground space-y-1">
+          <div className="flex flex-col gap-3">
+            <div className="text-xs p-3.5 bg-accent/5 border border-accent/15 rounded-xl text-left text-muted-foreground flex flex-col gap-1.5">
               <p className="font-semibold text-accent flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5" />
-                Demo Accounts (1-Click Login)
+                <Info className="w-3.5 h-3.5 shrink-0" />
+                <span>Demo Accounts (1-Click Login)</span>
               </p>
-              <p>
-                HR: <span className="font-mono text-foreground">{DEMO_HR_EMAIL}</span>{" "}
-                | <span className="font-mono text-foreground">{DEMO_HR_PASSWORD}</span>
-              </p>
-              <p>
-                Employee:{" "}
-                <span className="font-mono text-foreground">{DEMO_EMP_EMAIL}</span> |{" "}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 break-all">
+                <span>HR:</span>
+                <span className="font-mono text-foreground">{DEMO_HR_EMAIL}</span>
+                <span>|</span>
+                <span className="font-mono text-foreground">{DEMO_HR_PASSWORD}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 break-all">
+                <span>Employee:</span>
+                <span className="font-mono text-foreground">{DEMO_EMP_EMAIL}</span>
+                <span>|</span>
                 <span className="font-mono text-foreground">{DEMO_EMP_PASSWORD}</span>
-              </p>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="flex flex-col sm:flex-row gap-2.5">
               <button
                 type="button"
                 disabled={submitting !== null}
@@ -238,14 +224,14 @@ export default function LoginPage() {
                   setPassword(DEMO_HR_PASSWORD);
                   void performSignIn(DEMO_HR_EMAIL, DEMO_HR_PASSWORD, "hr");
                 }}
-                className="py-2 px-3 rounded-lg border border-border bg-secondary hover:bg-muted text-foreground text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                className="flex-1 py-2.5 px-3 rounded-xl border border-border bg-secondary hover:bg-muted text-foreground text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
               >
                 {submitting === "hr" ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
                 ) : (
-                  <ShieldCheck className="w-3.5 h-3.5 text-accent" />
+                  <ShieldCheck className="w-3.5 h-3.5 text-accent shrink-0" />
                 )}
-                Demo HR Login
+                <span>Demo HR Login</span>
               </button>
 
               <button
@@ -256,26 +242,16 @@ export default function LoginPage() {
                   setPassword(DEMO_EMP_PASSWORD);
                   void performSignIn(DEMO_EMP_EMAIL, DEMO_EMP_PASSWORD, "emp");
                 }}
-                className="py-2 px-3 rounded-lg border border-border bg-secondary hover:bg-muted text-foreground text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                className="flex-1 py-2.5 px-3 rounded-xl border border-border bg-secondary hover:bg-muted text-foreground text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
               >
                 {submitting === "emp" ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
                 ) : (
-                  <User className="w-3.5 h-3.5 text-primary" />
+                  <User className="w-3.5 h-3.5 text-primary shrink-0" />
                 )}
-                Demo Employee Login
+                <span>Demo Employee Login</span>
               </button>
             </div>
-          </div>
-
-          <div className="mt-6 text-center text-sm text-muted-foreground">
-            Don&apos;t have an account?{" "}
-            <Link
-              href="/signup"
-              className="text-accent font-medium hover:underline"
-            >
-              Sign up
-            </Link>
           </div>
         </div>
       </div>

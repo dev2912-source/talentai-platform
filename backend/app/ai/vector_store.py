@@ -1,5 +1,8 @@
+from contextvars import ContextVar
+import hashlib
 import io
 import logging
+import math
 import os
 import re
 from typing import Any
@@ -11,8 +14,9 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 EMBEDDING_DIM = 768
-EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-en"
+EMBEDDING_MODEL = "nvidia/nemotron-3.5-embed-1b"
 DEFAULT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
+_EMBED_INPUT_TYPE: ContextVar[str] = ContextVar("_EMBED_INPUT_TYPE", default="passage")
 
 
 def extract_text_from_pdf_bytes(content: bytes) -> str:
@@ -162,37 +166,73 @@ def split_text(
     return _split_piece(cleaned, chunk_size, min(chunk_overlap, max(0, chunk_size - 1)), seps)
 
 
+def _normalize_embedding(vec: list[float], dim: int = EMBEDDING_DIM) -> list[float]:
+    """Fit an embedding vector to `dim` dimensions and L2-normalize it (non-zero)."""
+    if len(vec) > dim:
+        fitted = [float(x) for x in vec[:dim]]
+    elif len(vec) < dim:
+        fitted = [float(x) for x in vec] + [0.0] * (dim - len(vec))
+    else:
+        fitted = [float(x) for x in vec]
+
+    norm = math.sqrt(sum(x * x for x in fitted))
+    if norm > 0.0:
+        return [x / norm for x in fitted]
+    # Avoid all-zero vectors which cause NaN in pgvector cosine distance (<=>)
+    fallback = [0.0] * dim
+    fallback[0] = 1.0
+    return fallback
+
+
+def _hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
+    """Generate a deterministic non-zero 768-dim token-hash embedding fallback."""
+    vec = [0.0] * dim
+    tokens = re.findall(r"[a-z0-9]+", text.lower()) or [text.lower() or "empty"]
+    for tok in tokens:
+        digest = hashlib.sha256(tok.encode("utf-8")).digest()
+        idx = int.from_bytes(digest[:4], "big") % dim
+        sign = 1.0 if (digest[4] & 1) == 0 else -1.0
+        vec[idx] += sign
+    return _normalize_embedding(vec, dim)
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate 768-dim embeddings via OpenRouter with zero-vector fallback."""
+    """Generate 768-dim embeddings via NVIDIA NIM with deterministic non-zero fallback."""
     if not texts:
         return []
 
     settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
+    api_key = settings.NVIDIA_API_KEY
     if not api_key:
-        logger.warning("OPENROUTER_API_KEY not set; using zero embeddings fallback.")
-        return [[0.0] * EMBEDDING_DIM for _ in texts]
+        logger.warning("NVIDIA_API_KEY not set; using deterministic hash embeddings fallback.")
+        return [_hash_embedding(t) for t in texts]
 
-    api_url = f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/embeddings"
+    api_url = f"{settings.NVIDIA_BASE_URL.rstrip('/')}/embeddings"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {"model": EMBEDDING_MODEL, "input": texts}
+    payload = {
+        "model": settings.NVIDIA_EMBEDDING_MODEL or EMBEDDING_MODEL,
+        "input": texts,
+        "input_type": _EMBED_INPUT_TYPE.get(),
+        "encoding_format": "float",
+        "truncate": "END",
+    }
 
     response = None
     try:
         response = requests.post(api_url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return [item["embedding"] for item in data["data"]]
+        return [_normalize_embedding(item["embedding"]) for item in data["data"]]
     except Exception as exc:
         logger.error(
-            "OpenRouter Embeddings API failed: %s. Response: %s",
+            "NVIDIA NIM Embeddings API failed: %s. Response: %s",
             exc,
             getattr(response, "text", "No response"),
         )
-        return [[0.0] * EMBEDDING_DIM for _ in texts]
+        return [_hash_embedding(t) for t in texts]
 
 
 def ingest_resumes_to_pgvector(
@@ -273,7 +313,12 @@ def search_resumes_pgvector(
     if not query.strip():
         return []
 
-    query_embedding = embed_texts([query])[0]
+    rows: list[dict[str, Any]] = []
+    token = _EMBED_INPUT_TYPE.set("query")
+    try:
+        query_embedding = embed_texts([query])[0]
+    finally:
+        _EMBED_INPUT_TYPE.reset(token)
     try:
         rpc_res = supabase.rpc(
             "match_resume_chunks",
@@ -286,7 +331,21 @@ def search_resumes_pgvector(
         rows = getattr(rpc_res, "data", None) or []
     except Exception as exc:
         logger.error("Supabase pgvector RPC failed: %s", exc)
-        return []
+        rows = []
+
+    if not rows:
+        try:
+            fallback_res = (
+                supabase.table("resume_chunks")
+                .select("source_file, candidate_name, candidate_email, content")
+                .eq("job_id", job_id)
+                .limit(match_count)
+                .execute()
+            )
+            rows = getattr(fallback_res, "data", None) or []
+        except Exception as exc:
+            logger.error("Direct resume_chunks fallback query failed: %s", exc)
+            rows = []
 
     return [
         {

@@ -656,3 +656,255 @@ def test_recruitment_invalid_uuid_returns_422(client, hr_headers):
         headers=hr_headers,
         json={"decisions": []},
     ).status_code == 422
+    assert client.delete("/api/recruitment/jobs/not-a-uuid", headers=hr_headers).status_code == 422
+    assert client.get("/api/recruitment/candidates/not-a-uuid/resume", headers=hr_headers).status_code == 422
+
+
+def test_screen_respects_custom_min_score_threshold(client, mock_supabase, hr_headers, monkeypatch):
+    monkeypatch.setattr(
+        vector_store,
+        "embed_texts",
+        lambda texts: [[0.1] * 768 for _ in texts],
+    )
+    screener_json = json.dumps([
+        {
+            "name": "High Match",
+            "email": "high@example.com",
+            "match_score": 88,
+            "matched_skills": "Python, FastAPI",
+            "source_file": "high.txt",
+        },
+        {
+            "name": "Mid Match",
+            "email": "mid@example.com",
+            "match_score": 60,
+            "matched_skills": "Python",
+            "source_file": "mid.txt",
+        },
+    ])
+    fake_llm = _FakeLLM([
+        screener_json,
+        json.dumps([{"name": "High Match", "email": "high@example.com", "interview_slot": "Mon 10:00 AM"}]),
+        json.dumps([{"name": "High Match", "email": "high@example.com", "subject": "Invite", "body": "Welcome"}]),
+    ])
+    monkeypatch.setattr(recruitment_graph, "get_llm", lambda temperature=0.2: fake_llm)
+
+    res = client.post(
+        "/api/recruitment/screen",
+        headers=hr_headers,
+        data={
+            "title": "Senior API Engineer",
+            "department": "Engineering",
+            "description": "FastAPI backend",
+            "required_skills": "Python, FastAPI",
+            "experience_years": "3",
+            "min_score": "75",
+        },
+        files=[("resumes", ("high.txt", b"High Match\nhigh@example.com\nPython FastAPI", "text/plain"))],
+    )
+    assert res.status_code == 200
+    cands = res.json()["candidates"]
+    assert len(cands) == 1
+    assert cands[0]["name"] == "High Match"
+
+
+def test_download_candidate_resume_and_delete_job_cleans_storage(client, mock_supabase, hr_headers):
+    job_id = "12121212-1212-1212-1212-121212121212"
+    cand_id = "34343434-3434-3434-3434-343434343434"
+    storage_path = f"{job_id}/abcd_alice.txt"
+
+    mock_supabase.storage.buckets["hr-uploads"][storage_path] = b"Alice Resume Content"
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "Backend Engineer",
+        "department": "Engineering",
+        "description": "Build APIs",
+        "required_skills": "Python",
+        "experience_years": 2,
+        "status": "pending_approval",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+    mock_supabase.tables["candidates"].append({
+        "id": cand_id,
+        "job_id": job_id,
+        "name": "Alice",
+        "email": "alice@example.com",
+        "match_score": 90.0,
+        "matched_skills": "Python",
+        "interview_slot": "TBD",
+        "email_subject": "Invite",
+        "email_body": "Body",
+        "resume_source": "alice.txt",
+        "resume_storage_path": storage_path,
+        "email_sent": False,
+        "status": "email_drafted",
+    })
+
+    dl = client.get(f"/api/recruitment/candidates/{cand_id}/resume", headers=hr_headers)
+    assert dl.status_code == 200
+    assert dl.content == b"Alice Resume Content"
+    assert "alice.txt" in dl.headers["content-disposition"]
+
+    del_res = client.delete(f"/api/recruitment/jobs/{job_id}", headers=hr_headers)
+    assert del_res.status_code == 200
+    assert del_res.json() == {"status": "deleted", "id": job_id}
+    assert mock_supabase.tables["job_postings"] == []
+    assert storage_path not in mock_supabase.storage.buckets["hr-uploads"]
+
+
+def test_export_job_candidates_excel_and_rescreen_adds_candidates(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        vector_store,
+        "embed_texts",
+        lambda texts: [[0.1] * 768 for _ in texts],
+    )
+    job_id = "56565656-5656-5656-5656-565656565656"
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "Data Engineer",
+        "department": "Engineering",
+        "description": "Build ETL pipelines",
+        "required_skills": "Python, SQL",
+        "experience_years": 2,
+        "status": "pending_approval",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+    mock_supabase.tables["candidates"].append({
+        "id": "78787878-7878-7878-7878-787878787878",
+        "job_id": job_id,
+        "name": "Existing Candidate",
+        "email": "existing@example.com",
+        "match_score": 85.0,
+        "matched_skills": "Python, SQL",
+        "interview_slot": "Mon 10:00 AM",
+        "email_subject": "Invite",
+        "email_body": "Body",
+        "resume_source": "existing.txt",
+        "resume_storage_path": f"{job_id}/existing.txt",
+        "email_sent": False,
+        "status": "email_drafted",
+    })
+
+    fake_llm = _FakeLLM([
+        json.dumps([
+            {
+                "name": "Existing Candidate",
+                "email": "existing@example.com",
+                "match_score": 85,
+                "matched_skills": "Python, SQL",
+                "source_file": "existing.txt",
+            },
+            {
+                "name": "New Candidate",
+                "email": "new@example.com",
+                "match_score": 91,
+                "matched_skills": "Python, SQL, Spark",
+                "source_file": "new.txt",
+            },
+        ]),
+        json.dumps([
+            {"name": "New Candidate", "email": "new@example.com", "interview_slot": "Tue 11:00 AM"},
+        ]),
+        json.dumps([
+            {"name": "New Candidate", "email": "new@example.com", "subject": "Invite", "body": "Welcome"},
+        ]),
+    ])
+    monkeypatch.setattr(recruitment_graph, "get_llm", lambda temperature=0.2: fake_llm)
+
+    rescreen = client.post(
+        f"/api/recruitment/jobs/{job_id}/rescreen",
+        headers=hr_headers,
+        data={"min_score": "40"},
+        files=[("resumes", ("new.txt", b"New Candidate\nnew@example.com\nPython SQL Spark", "text/plain"))],
+    )
+    assert rescreen.status_code == 200
+    assert len(rescreen.json()["candidates"]) == 2
+
+    export_res = client.get(f"/api/recruitment/jobs/{job_id}/export", headers=hr_headers)
+    assert export_res.status_code == 200
+    assert "spreadsheetml" in export_res.headers["content-type"]
+    assert len(export_res.content) > 500
+
+
+def test_edit_job_manual_candidate_delete_candidate_and_email_override(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    job_id = "90909090-9090-9090-9090-909090909090"
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "QA Engineer",
+        "department": "Engineering",
+        "description": "Write automated tests",
+        "required_skills": "Pytest",
+        "experience_years": 1,
+        "status": "pending_approval",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+
+    patch_res = client.patch(
+        f"/api/recruitment/jobs/{job_id}",
+        headers=hr_headers,
+        json={
+            "title": "Senior QA Engineer",
+            "department": "Engineering",
+            "description": "Build Playwright and Pytest suites",
+            "required_skills": "Pytest, Playwright",
+            "experience_years": 3,
+        },
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["title"] == "Senior QA Engineer"
+
+    add_res = client.post(
+        f"/api/recruitment/jobs/{job_id}/candidates",
+        headers=hr_headers,
+        json={
+            "name": "Priya Sharma",
+            "email": "",
+            "match_score": 88,
+            "matched_skills": "Pytest, Playwright",
+            "interview_slot": "Fri 10:00 AM",
+        },
+    )
+    assert add_res.status_code == 201
+    cand_id = add_res.json()["id"]
+
+    add_extra = client.post(
+        f"/api/recruitment/jobs/{job_id}/candidates",
+        headers=hr_headers,
+        json={"name": "Duplicate Candidate", "match_score": 50},
+    )
+    assert add_extra.status_code == 201
+    extra_id = add_extra.json()["id"]
+
+    del_cand = client.delete(f"/api/recruitment/candidates/{extra_id}", headers=hr_headers)
+    assert del_cand.status_code == 200
+    assert len(mock_supabase.tables["candidates"]) == 1
+
+    sent_calls: list[str] = []
+    monkeypatch.setattr(
+        "app.routers.recruitment.send_interview_email",
+        lambda to_email, _sub, _body: sent_calls.append(to_email) or {"status": "sent"},
+    )
+    approve_res = client.post(
+        f"/api/recruitment/jobs/{job_id}/approve",
+        headers=hr_headers,
+        json={
+            "decisions": [
+                {
+                    "candidate_id": cand_id,
+                    "approved": True,
+                    "email": "priya@example.com",
+                    "email_subject": "Invite",
+                    "email_body": "See you Fri",
+                    "interview_slot": "Fri 10:00 AM",
+                }
+            ]
+        },
+    )
+    assert approve_res.status_code == 200
+    assert approve_res.json()["email_mode"] in ("console", "smtp")
+    assert sent_calls == ["priya@example.com"]
+    assert mock_supabase.tables["candidates"][0]["email"] == "priya@example.com"

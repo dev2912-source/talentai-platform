@@ -14,9 +14,17 @@ from supabase import Client
 
 from app.ai.performance import generate_performance_review
 from app.db import get_supabase
-from app.deps import CurrentUser, require_hr
-from app.models.schemas import PerformanceBatchResponse, PerformanceRecordOut
-from app.services.exports import build_performance_pdf
+from app.deps import CurrentUser, require_employee, require_hr
+from app.models.schemas import (
+    PerformanceBatchResponse,
+    PerformanceBatchSummaryOut,
+    PerformanceRecordOut,
+)
+from app.services.exports import (
+    build_performance_excel,
+    build_performance_pdf,
+    build_sample_performance_kpi_excel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +348,49 @@ async def upload_performance_excel(
     )
 
 
+@router.get("/sample-kpi")
+def download_sample_kpi_sheet(
+    _hr: CurrentUser = Depends(require_hr),
+) -> Response:
+    """Download a sample Excel (.xlsx) KPI sheet for testing bulk AI performance reviews."""
+    xlsx_bytes = build_sample_performance_kpi_excel()
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="sample_performance_kpi.xlsx"'},
+    )
+
+
+@router.get("/batches", response_model=list[PerformanceBatchSummaryOut])
+def list_performance_batches(
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> list[PerformanceBatchSummaryOut]:
+    """List past AI performance review batches ordered newest first (HR only)."""
+    res = (
+        supabase.table("performance_records")
+        .select("batch_id, review_period, created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    batches: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        bid = str(row.get("batch_id") or "")
+        if not bid:
+            continue
+        if bid not in batches:
+            batches[bid] = {
+                "batch_id": bid,
+                "review_period": str(row.get("review_period") or ""),
+                "created_at": row.get("created_at"),
+                "employee_count": 1,
+            }
+        else:
+            batches[bid]["employee_count"] += 1
+    return [PerformanceBatchSummaryOut(**item) for item in list(batches.values())[:20]]
+
+
 @router.get("/reports", response_model=PerformanceBatchResponse)
 def get_performance_reports(
     batch_id: uuid.UUID | None = Query(default=None),
@@ -354,6 +405,25 @@ def get_performance_reports(
     return PerformanceBatchResponse(
         batch_id=resolved_batch_id,
         records=[PerformanceRecordOut(**row) for row in rows],
+    )
+
+
+@router.get("/reports/excel")
+def download_performance_reports_excel(
+    batch_id: uuid.UUID | None = Query(default=None),
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> Response:
+    """Generate and stream a styled Excel (.xlsx) of the requested or latest performance batch."""
+    _resolved_batch_id, rows = _fetch_performance_batch(
+        supabase,
+        str(batch_id) if batch_id is not None else None,
+    )
+    xlsx_bytes = build_performance_excel(rows)
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="performance_reports.xlsx"'},
     )
 
 
@@ -374,3 +444,38 @@ def download_performance_reports_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="performance_reports.pdf"'},
     )
+
+
+@router.delete("/batches/{batch_id}")
+def delete_performance_batch(
+    batch_id: uuid.UUID,
+    _hr: CurrentUser = Depends(require_hr),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, str]:
+    """Delete an entire performance review batch by batch_id (HR only)."""
+    batch_id_str = str(batch_id)
+    res = supabase.table("performance_records").delete().eq("batch_id", batch_id_str).execute()
+    deleted = getattr(res, "data", None) or []
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Performance batch not found.",
+        )
+    return {"status": "deleted", "batch_id": batch_id_str}
+
+
+@router.get("/my-reviews", response_model=list[PerformanceRecordOut])
+def get_my_performance_reviews(
+    employee: CurrentUser = Depends(require_employee),
+    supabase: Client = Depends(get_supabase),
+) -> list[PerformanceRecordOut]:
+    """Return the signed-in employee's own AI performance review records."""
+    res = (
+        supabase.table("performance_records")
+        .select("*")
+        .eq("employee_id", employee.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return [PerformanceRecordOut(**row) for row in rows]

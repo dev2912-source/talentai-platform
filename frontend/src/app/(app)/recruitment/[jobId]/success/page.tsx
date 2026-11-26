@@ -9,6 +9,7 @@ import {
   Calendar,
   Check,
   CheckCircle2,
+  Download,
   Home,
   Loader2,
   MailCheck,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError, apiFetch } from "@/lib/api";
+import { ApiError, apiDownloadBlob, apiFetch, triggerBlobDownload } from "@/lib/api";
 import type {
   CandidateOut,
   JobDetailResponse,
@@ -58,8 +59,10 @@ function SuccessContent() {
 
   const [job, setJob] = useState<JobPostingOut | null>(null);
   const [candidates, setCandidates] = useState<CandidateOut[]>([]);
+  const [emailMode, setEmailMode] = useState<string>("console");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const loadJobDetail = useCallback(async () => {
     if (!token || !jobId) {
@@ -76,6 +79,7 @@ function SuccessContent() {
       );
       setJob(data.job);
       setCandidates(data.candidates);
+      if (data.email_mode) setEmailMode(data.email_mode);
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -90,6 +94,26 @@ function SuccessContent() {
   useEffect(() => {
     loadJobDetail();
   }, [loadJobDetail]);
+
+  async function handleExportExcel() {
+    if (!token || !jobId || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await apiDownloadBlob(
+        `/api/recruitment/jobs/${jobId}/export`,
+        token,
+      );
+      triggerBlobDownload(blob, "recruitment_candidates.xlsx");
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.detail
+          : "Failed to export candidates Excel report.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -170,7 +194,7 @@ function SuccessContent() {
             }`}
           />
         </div>
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mb-2">
           {headingTitle}
         </h1>
         <p className="text-slate-500">{headingSubtitle}</p>
@@ -205,6 +229,10 @@ function SuccessContent() {
             <CheckCircle2 className="w-5 h-5" />
             <span>{statusDisplay}</span>
           </div>
+          <span className="mt-2 text-[11px] text-slate-400">
+            Delivery:{" "}
+            {emailMode === "smtp" ? "SMTP Live" : "Demo Console Mode"}
+          </span>
         </div>
       </div>
 
@@ -228,11 +256,24 @@ function SuccessContent() {
       {/* Sent Invitations Table */}
       {candidates.length > 0 && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-slate-200">
+          <div className="p-6 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
               <Send className="w-5 h-5 text-accent" />
               Sent Invitations
             </h3>
+            <button
+              type="button"
+              onClick={() => void handleExportExcel()}
+              disabled={exporting}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 text-xs font-medium transition-colors cursor-pointer disabled:opacity-60"
+            >
+              {exporting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span>{exporting ? "Exporting..." : "Export Excel"}</span>
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
