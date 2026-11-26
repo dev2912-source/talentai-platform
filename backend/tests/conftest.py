@@ -1,6 +1,9 @@
 from copy import deepcopy
+from datetime import datetime, timezone
+import math
 from types import SimpleNamespace
 from typing import Any
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,8 +161,15 @@ class FakeQueryBuilder:
 
         if self._op == "insert":
             items = self._payload if isinstance(self._payload, list) else [self._payload]
-            inserted = [deepcopy(item) for item in items]
-            rows.extend(inserted)
+            inserted = []
+            for item in items:
+                new_row = deepcopy(item)
+                if "id" not in new_row:
+                    new_row["id"] = str(uuid.uuid4())
+                if "created_at" not in new_row:
+                    new_row["created_at"] = datetime.now(timezone.utc).isoformat()
+                rows.append(new_row)
+                inserted.append(deepcopy(new_row))
             return SimpleNamespace(data=inserted)
 
         if self._op == "update":
@@ -198,6 +208,70 @@ class FakeQueryBuilder:
         return SimpleNamespace(data=[])
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+class FakeStorageBucket:
+    def __init__(self, buckets: dict[str, dict[str, bytes]], bucket_name: str):
+        self._buckets = buckets
+        self._bucket_name = bucket_name
+
+    def upload(self, path: str, file: bytes, file_options: dict[str, Any] | None = None):
+        bucket = self._buckets.setdefault(self._bucket_name, {})
+        bucket[path] = file
+        return SimpleNamespace(path=path, full_path=f"{self._bucket_name}/{path}")
+
+    def download(self, path: str) -> bytes:
+        return self._buckets.get(self._bucket_name, {})[path]
+
+
+class FakeStorage:
+    def __init__(self):
+        self.buckets: dict[str, dict[str, bytes]] = {"hr-uploads": {}}
+
+    def from_(self, bucket_name: str) -> FakeStorageBucket:
+        return FakeStorageBucket(self.buckets, bucket_name)
+
+
+class FakeRpcQuery:
+    def __init__(self, tables: dict[str, list[dict[str, Any]]], fn_name: str, params: dict[str, Any]):
+        self._tables = tables
+        self._fn_name = fn_name
+        self._params = params
+
+    def execute(self):
+        if self._fn_name == "match_resume_chunks":
+            query_embedding = self._params.get("query_embedding", [])
+            match_job_id = self._params.get("match_job_id")
+            match_count = int(self._params.get("match_count", 30))
+            rows = [
+                row for row in self._tables.get("resume_chunks", [])
+                if row.get("job_id") == match_job_id
+            ]
+            scored = []
+            for row in rows:
+                sim = _cosine_similarity(query_embedding, row.get("embedding", []))
+                scored.append({
+                    "id": row.get("id"),
+                    "source_file": row.get("source_file"),
+                    "candidate_name": row.get("candidate_name"),
+                    "candidate_email": row.get("candidate_email"),
+                    "content": row.get("content"),
+                    "similarity": sim,
+                })
+            scored.sort(key=lambda r: r["similarity"], reverse=True)
+            return SimpleNamespace(data=scored[:match_count])
+        raise ValueError(f"Unsupported fake RPC function: {self._fn_name}")
+
+
 class FakeSupabaseClient:
     def __init__(self):
         self.tables: dict[str, list[dict[str, Any]]] = {
@@ -212,9 +286,13 @@ class FakeSupabaseClient:
             "attendance_reports": [],
         }
         self.auth = FakeAuth()
+        self.storage = FakeStorage()
 
     def table(self, name: str) -> FakeQueryBuilder:
         return FakeQueryBuilder(self.tables, name)
+
+    def rpc(self, fn_name: str, params: dict[str, Any] | None = None) -> FakeRpcQuery:
+        return FakeRpcQuery(self.tables, fn_name, params or {})
 
 
 @pytest.fixture

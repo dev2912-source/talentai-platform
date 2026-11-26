@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.models.schemas import HealthResponse
 from app.routers.auth import router as auth_router
+from app.routers.recruitment import router as recruitment_router
 
 
 def create_app() -> FastAPI:
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
         return HealthResponse(status="ok", service="talentai-backend")
 
     application.include_router(auth_router)
+    application.include_router(recruitment_router)
     return application
 
 
