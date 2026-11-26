@@ -83,6 +83,19 @@ def ingest_resumes(state: HRState) -> dict[str, Any]:
 def screen_candidates(state: HRState) -> dict[str, Any]:
     """Node 2: Query pgvector chunks and invoke Screener Agent to shortlist (score >= 40)."""
     logger.info("▶ Node: screen_candidates")
+    if state.get("error"):
+        return {
+            "shortlisted_candidates": [],
+            "retrieved_chunks": [],
+            "error": state["error"],
+        }
+    if not state.get("ingested_docs"):
+        return {
+            "shortlisted_candidates": [],
+            "retrieved_chunks": [],
+            "error": "No resume text could be extracted from the uploaded files.",
+        }
+
     job_id = state.get("job_id", "")
     job_title = state.get("job_title", "")
     job_description = state.get("job_description", "")
@@ -130,22 +143,23 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
         response = llm.invoke(messages)
         shortlisted = _parse_json_from_llm(str(response.content))
 
-        # Filter match_score >= 40 and deduplicate by name (keep highest score)
+        # Filter match_score >= 40 and deduplicate case-insensitively by name/email
         seen: dict[str, dict[str, Any]] = {}
         for candidate in shortlisted:
             score = float(candidate.get("match_score", 0) or 0)
             if score < 40:
                 continue
-            name = candidate.get("name", "Unknown")
+            name = str(candidate.get("name") or "Unknown").strip()
             source_file = candidate.get("source_file", "")
-            email = str(candidate.get("email", "") or "").lower()
+            email = str(candidate.get("email", "") or "").strip().lower()
             candidate["resume_storage_path"] = (
                 storage_by_file.get(source_file)
                 or storage_by_email.get(email)
                 or ""
             )
-            if name not in seen or score > float(seen[name].get("match_score", 0) or 0):
-                seen[name] = candidate
+            dedup_key = name.lower() if name else email
+            if dedup_key not in seen or score > float(seen[dedup_key].get("match_score", 0) or 0):
+                seen[dedup_key] = candidate
 
         return {
             "shortlisted_candidates": list(seen.values()),
@@ -164,9 +178,12 @@ def screen_candidates(state: HRState) -> dict[str, Any]:
 def schedule_interviews(state: HRState) -> dict[str, Any]:
     """Node 3: Assign 45-minute weekday interview slots to shortlisted candidates."""
     logger.info("▶ Node: schedule_interviews")
+    if state.get("error"):
+        return {"scheduled_candidates": [], "error": state["error"]}
+
     shortlisted = [dict(c) for c in state.get("shortlisted_candidates", [])]
     if not shortlisted:
-        return {"scheduled_candidates": [], "error": state.get("error")}
+        return {"scheduled_candidates": [], "error": None}
 
     try:
         llm = get_llm(temperature=0.3)
@@ -176,9 +193,21 @@ def schedule_interviews(state: HRState) -> dict[str, Any]:
         response = llm.invoke(messages)
         scheduled = _parse_json_from_llm(str(response.content))
 
-        slot_map = {s.get("name", ""): s.get("interview_slot", "") for s in scheduled}
+        slot_by_name = {
+            str(s.get("name", "") or "").strip().lower(): s.get("interview_slot", "")
+            for s in scheduled
+            if s.get("name")
+        }
+        slot_by_email = {
+            str(s.get("email", "") or "").strip().lower(): s.get("interview_slot", "")
+            for s in scheduled
+            if s.get("email")
+        }
         for candidate in shortlisted:
-            candidate["interview_slot"] = slot_map.get(candidate.get("name", ""), "TBD") or "TBD"
+            cname = str(candidate.get("name", "") or "").strip().lower()
+            cemail = str(candidate.get("email", "") or "").strip().lower()
+            slot = slot_by_name.get(cname) or slot_by_email.get(cemail) or "TBD"
+            candidate["interview_slot"] = slot
 
         return {"scheduled_candidates": shortlisted, "error": None}
     except Exception as exc:
@@ -191,11 +220,14 @@ def schedule_interviews(state: HRState) -> dict[str, Any]:
 def draft_emails(state: HRState) -> dict[str, Any]:
     """Node 4: Draft personalized interview invitation emails for HITL review."""
     logger.info("▶ Node: draft_emails")
+    if state.get("error"):
+        return {"email_drafts": [], "error": state["error"]}
+
     scheduled = state.get("scheduled_candidates", [])
     job_title = state.get("job_title", "")
 
     if not scheduled:
-        return {"email_drafts": [], "error": state.get("error")}
+        return {"email_drafts": [], "error": None}
 
     try:
         llm = get_llm(temperature=0.4)

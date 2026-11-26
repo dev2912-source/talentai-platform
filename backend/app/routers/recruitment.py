@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 import logging
 import os
@@ -132,15 +133,18 @@ async def screen_resumes(
     }).execute()
 
     try:
-        result = recruitment_screen_graph.invoke({
-            "job_id": job_id,
-            "job_title": title.strip(),
-            "job_description": description.strip(),
-            "required_skills": required_skills.strip() or "Not specified",
-            "experience_years": experience_years,
-            "uploaded_files": uploaded_files,
-            "supabase": supabase,
-        })
+        result = await asyncio.to_thread(
+            recruitment_screen_graph.invoke,
+            {
+                "job_id": job_id,
+                "job_title": title.strip(),
+                "job_description": description.strip(),
+                "required_skills": required_skills.strip() or "Not specified",
+                "experience_years": experience_years,
+                "uploaded_files": uploaded_files,
+                "supabase": supabase,
+            },
+        )
     except Exception as exc:
         logger.exception("Recruitment screening pipeline failed for job %s", job_id)
         supabase.table("job_postings").update({
@@ -151,6 +155,16 @@ async def screen_resumes(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI screening pipeline failed: {exc}",
         ) from exc
+
+    if result.get("error"):
+        supabase.table("job_postings").update({
+            "status": "draft",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", job_id).execute()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(result["error"]),
+        )
 
     scheduled = result.get("scheduled_candidates") or result.get("shortlisted_candidates") or []
     drafts = result.get("email_drafts") or []
@@ -246,8 +260,7 @@ def approve_job_candidates(
     cands_res = supabase.table("candidates").select("*").eq("job_id", job_id).execute()
     existing_by_id = {str(c["id"]): c for c in (getattr(cands_res, "data", None) or [])}
 
-    sent_count = 0
-    rejected_count = 0
+    send_errors: list[str] = []
 
     for decision in payload.decisions:
         candidate = existing_by_id.get(decision.candidate_id)
@@ -267,13 +280,23 @@ def approve_job_candidates(
 
         if decision.approved:
             recipient = candidate.get("email")
-            email_sent = False
-            new_status = "shortlisted"
-            if recipient:
-                send_interview_email(str(recipient), subject, body)
+            already_sent = bool(candidate.get("email_sent"))
+            if already_sent:
                 email_sent = True
                 new_status = "email_sent"
-                sent_count += 1
+            elif recipient:
+                try:
+                    send_interview_email(str(recipient), subject, body)
+                    email_sent = True
+                    new_status = "email_sent"
+                except Exception as exc:
+                    logger.exception("Failed to send interview email to %s", recipient)
+                    send_errors.append(f"{candidate.get('name', 'Candidate')} ({recipient}): {exc}")
+                    email_sent = False
+                    new_status = "email_drafted"
+            else:
+                email_sent = False
+                new_status = "shortlisted"
 
             supabase.table("candidates").update({
                 "email_subject": subject,
@@ -283,7 +306,6 @@ def approve_job_candidates(
                 "status": new_status,
             }).eq("id", decision.candidate_id).execute()
         else:
-            rejected_count += 1
             supabase.table("candidates").update({
                 "email_subject": subject,
                 "email_body": body,
@@ -291,6 +313,12 @@ def approve_job_candidates(
                 "email_sent": False,
                 "status": "rejected",
             }).eq("id", decision.candidate_id).execute()
+
+    if send_errors:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to send one or more interview emails: {'; '.join(send_errors)}",
+        )
 
     supabase.table("job_postings").update({
         "status": "approved",
@@ -305,6 +333,8 @@ def approve_job_candidates(
         .execute()
     )
     updated_candidates = getattr(updated_res, "data", None) or []
+    sent_count = sum(1 for c in updated_candidates if c.get("email_sent"))
+    rejected_count = sum(1 for c in updated_candidates if c.get("status") == "rejected")
 
     return ApproveJobResponse(
         job_id=job_id,

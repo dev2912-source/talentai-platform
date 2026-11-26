@@ -245,3 +245,227 @@ def test_vector_store_splitter_and_email_console_fallback():
     )
     assert result["status"] == "sent"
     assert result["mode"] == "console"
+
+
+def test_screen_returns_502_and_reverts_job_to_draft_on_llm_error(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        vector_store,
+        "embed_texts",
+        lambda texts: [[0.1] * 768 for _ in texts],
+    )
+
+    class _FailingLLM:
+        def invoke(self, _messages):
+            raise RuntimeError("OpenRouter upstream timeout")
+
+    monkeypatch.setattr(recruitment_graph, "get_llm", lambda temperature=0.2: _FailingLLM())
+
+    res = client.post(
+        "/api/recruitment/screen",
+        headers=hr_headers,
+        data={
+            "title": "Platform Engineer",
+            "department": "Engineering",
+            "description": "Manage cloud infrastructure",
+            "required_skills": "Python, Kubernetes",
+            "experience_years": "3",
+        },
+        files=[
+            (
+                "resumes",
+                ("alice.txt", b"Alice Johnson\nalice@example.com\nPython Kubernetes", "text/plain"),
+            ),
+        ],
+    )
+
+    assert res.status_code == 502
+    assert "Screening error" in res.json()["detail"]
+    assert len(mock_supabase.tables["job_postings"]) == 1
+    assert mock_supabase.tables["job_postings"][0]["status"] == "draft"
+    assert mock_supabase.tables["candidates"] == []
+
+
+def test_screen_short_circuits_when_ingestion_yields_no_docs(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    search_called = False
+
+    def _unexpected_search(*_args, **_kwargs):
+        nonlocal search_called
+        search_called = True
+        return []
+
+    monkeypatch.setattr(recruitment_graph, "search_resumes_pgvector", _unexpected_search)
+
+    res = client.post(
+        "/api/recruitment/screen",
+        headers=hr_headers,
+        data={
+            "title": "Platform Engineer",
+            "department": "Engineering",
+            "description": "Manage cloud infrastructure",
+            "required_skills": "Python",
+            "experience_years": "2",
+        },
+        files=[
+            ("resumes", ("blank.txt", b"   \n  ", "text/plain")),
+        ],
+    )
+
+    assert res.status_code == 502
+    assert search_called is False
+    assert mock_supabase.tables["job_postings"][0]["status"] == "draft"
+
+
+def test_approve_is_idempotent_for_already_sent_candidates(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    job_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    cand_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "Staff Engineer",
+        "department": "Engineering",
+        "description": "Lead architecture",
+        "required_skills": "Python, Distributed Systems",
+        "experience_years": 6,
+        "status": "pending_approval",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+    mock_supabase.tables["candidates"].append({
+        "id": cand_id,
+        "job_id": job_id,
+        "name": "Alice Johnson",
+        "email": "alice@example.com",
+        "match_score": 95.0,
+        "matched_skills": "Python, Distributed Systems",
+        "interview_slot": "Wednesday, June 4, 2025 at 10:00 AM",
+        "email_subject": "Initial Subject",
+        "email_body": "Initial Body",
+        "resume_source": "alice.txt",
+        "resume_storage_path": f"{job_id}/alice.txt",
+        "email_sent": False,
+        "status": "email_drafted",
+    })
+
+    sent_calls: list[str] = []
+
+    def _fake_send(to_email: str, subject: str, body: str) -> dict[str, str]:
+        sent_calls.append(to_email)
+        return {"status": "sent", "mode": "console", "to": to_email}
+
+    monkeypatch.setattr("app.routers.recruitment.send_interview_email", _fake_send)
+
+    payload = {
+        "decisions": [
+            {
+                "candidate_id": cand_id,
+                "approved": True,
+                "email_subject": "Invite — Staff Engineer",
+                "email_body": "Please confirm your slot.",
+                "interview_slot": "Wednesday, June 4, 2025 at 10:00 AM",
+            }
+        ]
+    }
+
+    first = client.post(f"/api/recruitment/jobs/{job_id}/approve", headers=hr_headers, json=payload)
+    assert first.status_code == 200
+    assert len(sent_calls) == 1
+
+    second = client.post(f"/api/recruitment/jobs/{job_id}/approve", headers=hr_headers, json=payload)
+    assert second.status_code == 200
+    assert len(sent_calls) == 1
+    assert mock_supabase.tables["candidates"][0]["email_sent"] is True
+    assert mock_supabase.tables["candidates"][0]["status"] == "email_sent"
+
+
+def test_approve_handles_partial_smtp_failure_without_aborting_batch(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    job_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    cand_ok_id = "11111111-2222-3333-4444-555555555555"
+    cand_fail_id = "66666666-7777-8888-9999-000000000000"
+
+    mock_supabase.tables["job_postings"].append({
+        "id": job_id,
+        "title": "Security Engineer",
+        "department": "Security",
+        "description": "AppSec and IAM",
+        "required_skills": "Python, OAuth2",
+        "experience_years": 4,
+        "status": "pending_approval",
+        "created_by": "11111111-1111-1111-1111-111111111111",
+    })
+    mock_supabase.tables["candidates"].extend([
+        {
+            "id": cand_ok_id,
+            "job_id": job_id,
+            "name": "Alice Ok",
+            "email": "alice@example.com",
+            "match_score": 90.0,
+            "matched_skills": "Python, OAuth2",
+            "interview_slot": "Thursday at 10:00 AM",
+            "email_subject": "Invite",
+            "email_body": "Body",
+            "resume_source": "alice.txt",
+            "resume_storage_path": f"{job_id}/alice.txt",
+            "email_sent": False,
+            "status": "email_drafted",
+        },
+        {
+            "id": cand_fail_id,
+            "job_id": job_id,
+            "name": "Bob Fail",
+            "email": "bob@example.com",
+            "match_score": 85.0,
+            "matched_skills": "OAuth2",
+            "interview_slot": "Thursday at 11:00 AM",
+            "email_subject": "Invite",
+            "email_body": "Body",
+            "resume_source": "bob.txt",
+            "resume_storage_path": f"{job_id}/bob.txt",
+            "email_sent": False,
+            "status": "email_drafted",
+        },
+    ])
+
+    def _flaky_send(to_email: str, subject: str, body: str) -> dict[str, str]:
+        if to_email == "bob@example.com":
+            raise RuntimeError("SMTP connection refused")
+        return {"status": "sent", "mode": "smtp", "to": to_email}
+
+    monkeypatch.setattr("app.routers.recruitment.send_interview_email", _flaky_send)
+
+    res = client.post(
+        f"/api/recruitment/jobs/{job_id}/approve",
+        headers=hr_headers,
+        json={
+            "decisions": [
+                {
+                    "candidate_id": cand_ok_id,
+                    "approved": True,
+                    "email_subject": "Invite Alice",
+                    "email_body": "Body Alice",
+                    "interview_slot": "Thursday at 10:00 AM",
+                },
+                {
+                    "candidate_id": cand_fail_id,
+                    "approved": True,
+                    "email_subject": "Invite Bob",
+                    "email_body": "Body Bob",
+                    "interview_slot": "Thursday at 11:00 AM",
+                },
+            ]
+        },
+    )
+
+    assert res.status_code == 502
+    by_id = {c["id"]: c for c in mock_supabase.tables["candidates"]}
+    assert by_id[cand_ok_id]["email_sent"] is True
+    assert by_id[cand_ok_id]["status"] == "email_sent"
+    assert by_id[cand_fail_id]["email_sent"] is False
+    assert by_id[cand_fail_id]["status"] == "email_drafted"
+    assert mock_supabase.tables["job_postings"][0]["status"] == "pending_approval"
