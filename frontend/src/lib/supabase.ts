@@ -19,7 +19,10 @@ export function isSupabaseConfigured(): boolean {
   );
 }
 
-/** Lazy singleton Supabase client that remains safe during build-time prerendering. */
+/**
+ * Return the singleton Supabase browser client, falling back to harmless
+ * placeholder credentials when public env vars are absent during `next build`.
+ */
 export function getSupabaseClient(): SupabaseClient {
   if (!client) {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL || FALLBACK_URL;
@@ -35,4 +38,5 @@ export function getSupabaseClient(): SupabaseClient {
   return client;
 }
 
+/** Shared singleton Supabase client instance initialized with build-safe defaults. */
 export const supabase: SupabaseClient = getSupabaseClient();

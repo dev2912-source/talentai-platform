@@ -32,27 +32,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const activeTokenRef = useRef<string | null>(null);
+  const profileRef = useRef<UserProfileOut | null>(null);
+  const inFlightFetchRef = useRef<{
+    token: string;
+    promise: Promise<UserProfileOut | null>;
+  } | null>(null);
+
+  const clearAuthState = useCallback(() => {
+    activeTokenRef.current = null;
+    profileRef.current = null;
+    setUser(null);
+    setToken(null);
+    setProfile(null);
+  }, []);
 
   const fetchProfileWithToken = useCallback(
     async (accessToken: string): Promise<UserProfileOut | null> => {
-      try {
-        const me = await apiFetch<UserProfileOut>("/api/auth/me", {}, accessToken);
-        setProfile(me);
-        return me;
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          setProfile(null);
+      if (inFlightFetchRef.current?.token === accessToken) {
+        return await inFlightFetchRef.current.promise;
+      }
+
+      const promise = (async (): Promise<UserProfileOut | null> => {
+        try {
+          const me = await apiFetch<UserProfileOut>("/api/auth/me", {}, accessToken);
+          if (activeTokenRef.current === accessToken) {
+            profileRef.current = me;
+            setProfile(me);
+          }
+          return me;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            clearAuthState();
+            try {
+              await supabase.auth.signOut();
+            } catch {
+              // Ignore signOut cleanup failures after clearing local auth state.
+            }
+          }
+          return null;
         }
-        return null;
+      })();
+
+      inFlightFetchRef.current = { token: accessToken, promise };
+      try {
+        return await promise;
+      } finally {
+        if (inFlightFetchRef.current?.promise === promise) {
+          inFlightFetchRef.current = null;
+        }
       }
     },
-    [],
+    [clearAuthState],
   );
 
   const refreshProfile = useCallback(
     async (overrideToken?: string): Promise<UserProfileOut | null> => {
-      const targetToken = overrideToken ?? activeTokenRef.current ?? token;
+      const targetToken = overrideToken ?? activeTokenRef.current;
       if (!targetToken) {
+        profileRef.current = null;
         setProfile(null);
         return null;
       }
@@ -60,19 +97,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(targetToken);
       return await fetchProfileWithToken(targetToken);
     },
-    [fetchProfileWithToken, token],
+    [fetchProfileWithToken],
   );
 
   const signOut = useCallback(async () => {
     try {
       await supabase.auth.signOut();
     } finally {
-      activeTokenRef.current = null;
-      setUser(null);
-      setProfile(null);
-      setToken(null);
+      clearAuthState();
     }
-  }, []);
+  }, [clearAuthState]);
 
   useEffect(() => {
     let mounted = true;
@@ -91,10 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setToken(session.access_token);
           await fetchProfileWithToken(session.access_token);
         } else {
-          activeTokenRef.current = null;
-          setUser(null);
-          setToken(null);
-          setProfile(null);
+          clearAuthState();
         }
       } finally {
         if (mounted) {
@@ -107,7 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (!mounted) return;
 
       if (session?.access_token) {
@@ -116,23 +147,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         activeTokenRef.current = nextToken;
         setUser(session.user);
         setToken(nextToken);
+
         if (tokenChanged) {
-          void fetchProfileWithToken(nextToken);
+          if (!profileRef.current) {
+            setLoading(true);
+          }
+          await fetchProfileWithToken(nextToken);
+          if (!mounted) return;
         }
       } else {
-        activeTokenRef.current = null;
-        setUser(null);
-        setToken(null);
-        setProfile(null);
+        clearAuthState();
       }
-      setLoading(false);
+
+      if (mounted) {
+        setLoading(false);
+      }
     });
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [fetchProfileWithToken]);
+  }, [clearAuthState, fetchProfileWithToken]);
 
   return (
     <AuthContext.Provider
