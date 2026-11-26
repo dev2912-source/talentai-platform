@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 import math
+import re
 from types import SimpleNamespace
 from typing import Any
 import uuid
@@ -54,6 +55,8 @@ class FakeAdminAuth:
         return list(self._users)
 
     def create_user(self, attributes: dict[str, Any]):
+        if any(getattr(u, "email", None) == attributes["email"] for u in self._users):
+            raise ValueError(f"User with email {attributes['email']} already exists")
         new_id = f"seeded-{len(self._users) + 1}"
         user = SimpleNamespace(
             id=new_id,
@@ -134,6 +137,14 @@ class FakeQueryBuilder:
         self._filters.append(("lt", column, value))
         return self
 
+    def ilike(self, column: str, pattern: str):
+        self._filters.append(("ilike", column, pattern))
+        return self
+
+    def or_(self, filters_str: str):
+        self._filters.append(("or", "", filters_str))
+        return self
+
     def order(self, column: str, desc: bool = False):
         self._order_by = (column, desc)
         return self
@@ -165,25 +176,57 @@ class FakeQueryBuilder:
                 pass
         return left, right
 
+    @staticmethod
+    def _like_to_regex(pattern: str) -> re.Pattern[str]:
+        parts: list[str] = ["^"]
+        for ch in pattern:
+            if ch == "%":
+                parts.append(".*")
+            elif ch == "_":
+                parts.append(".")
+            else:
+                parts.append(re.escape(ch))
+        parts.append("$")
+        return re.compile("".join(parts), re.IGNORECASE | re.DOTALL)
+
+    def _matches_clause(self, row: dict[str, Any], op: str, col: str, val: Any) -> bool:
+        cell = row.get(col)
+        if op == "eq":
+            return cell == val
+        if op == "in":
+            return cell in val
+        if op == "ilike":
+            if cell is None:
+                return False
+            return self._like_to_regex(str(val)).match(str(cell)) is not None
+        if op in ("gte", "lte", "gt", "lt"):
+            if cell is None:
+                return False
+            left, right = self._coerce_comparable(cell, val)
+            if op == "gte":
+                return bool(left >= right)
+            if op == "lte":
+                return bool(left <= right)
+            if op == "gt":
+                return bool(left > right)
+            if op == "lt":
+                return bool(left < right)
+        return True
+
     def _matches(self, row: dict[str, Any]) -> bool:
         for op, col, val in self._filters:
-            cell = row.get(col)
-            if op == "eq" and cell != val:
+            if op == "or":
+                clauses = [c.strip() for c in str(val).split(",") if c.strip()]
+                matched_any = False
+                for clause in clauses:
+                    parts = clause.split(".", 2)
+                    if len(parts) == 3 and self._matches_clause(row, parts[1], parts[0], parts[2]):
+                        matched_any = True
+                        break
+                if not matched_any:
+                    return False
+            elif not self._matches_clause(row, op, col, val):
                 return False
-            if op == "in" and cell not in val:
-                return False
-            if op in ("gte", "lte", "gt", "lt"):
-                if cell is None:
-                    return False
-                left, right = self._coerce_comparable(cell, val)
-                if op == "gte" and not (left >= right):
-                    return False
-                if op == "lte" and not (left <= right):
-                    return False
-                if op == "gt" and not (left > right):
-                    return False
-                if op == "lt" and not (left < right):
-                    return False
         return True
 
     def execute(self):

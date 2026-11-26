@@ -130,3 +130,58 @@ def build_attendance_pdf(reports: list[dict[str, Any]]) -> bytes:
     elements.append(table)
     doc.build(elements)
     return buffer.getvalue()
+
+
+def build_performance_pdf(records: list[dict[str, Any]]) -> bytes:
+    """Build a portrait PDF report from AI performance review records."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+
+    title_style = styles["Heading1"]
+    sub_style = styles["Heading2"]
+    section_style = styles["Heading4"]
+    normal_style = styles["Normal"]
+
+    elements: list[Any] = [
+        Paragraph("Performance Review Reports (Bulk Generated)", title_style),
+        Spacer(1, 20),
+    ]
+
+    if not records:
+        elements.append(Paragraph("No performance reports available.", normal_style))
+    else:
+        for record in records:
+            emp_name = escape(str(record.get("employee_name") or "Unknown"))
+            emp_email = escape(str(record.get("employee_email") or ""))
+            review_period = escape(str(record.get("review_period") or ""))
+            perf_score = record.get("performance_score")
+            score_text = escape(str(perf_score) if perf_score is not None else "N/A")
+            kpi_pct = record.get("kpi_achievement_percent")
+            kpi_text = escape(str(kpi_pct) if kpi_pct is not None else "N/A")
+
+            strengths = escape(str(record.get("strengths") or "")).replace("\n", "<br/>")
+            improvements = escape(str(record.get("areas_for_improvement") or "")).replace("\n", "<br/>")
+            actions = escape(str(record.get("recommended_actions") or "")).replace("\n", "<br/>")
+
+            elements.append(Paragraph(f"Employee: {emp_name} ({emp_email})", sub_style))
+            elements.append(Paragraph(f"Review Period: {review_period}", normal_style))
+            elements.append(Paragraph(f"AI Performance Score: {score_text}/100", normal_style))
+            elements.append(Paragraph(f"KPI Achievement: {kpi_text}%", normal_style))
+
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("Strengths:", section_style))
+            elements.append(Paragraph(strengths or "None recorded.", normal_style))
+
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("Areas for Improvement:", section_style))
+            elements.append(Paragraph(improvements or "None recorded.", normal_style))
+
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph("Recommended Actions:", section_style))
+            elements.append(Paragraph(actions or "None recorded.", normal_style))
+
+            elements.append(Spacer(1, 30))
+
+    doc.build(elements)
+    return buffer.getvalue()

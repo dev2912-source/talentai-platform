@@ -154,3 +154,81 @@ class AttendanceReportBatchResponse(BaseModel):
 
     batch_id: str | None = None
     reports: list[AttendanceReportOut] = Field(default_factory=list)
+
+
+class PerformanceRecordOut(BaseModel):
+    """Serialized AI performance review record."""
+
+    id: str
+    batch_id: str
+    employee_id: str
+    employee_name: str
+    employee_email: str
+    department: str = "General"
+    review_period: str
+    kpi_data: str
+    performance_score: int | None = None
+    kpi_achievement_percent: float | None = None
+    strengths: str | None = ""
+    areas_for_improvement: str | None = ""
+    recommended_actions: str | None = ""
+    created_at: str | None = None
+
+
+class PerformanceBatchResponse(BaseModel):
+    """Batch response for uploaded or fetched AI performance review records."""
+
+    batch_id: str | None = None
+    records: list[PerformanceRecordOut] = Field(default_factory=list)
+
+
+class PolicyIn(BaseModel):
+    """Payload for creating or updating a company policy."""
+
+    title: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+
+
+class PolicyOut(BaseModel):
+    """Serialized company policy record."""
+
+    id: str
+    title: str
+    content: str
+    last_updated: str | None = None
+
+
+class FaqIn(BaseModel):
+    """Payload for creating or updating a knowledge base FAQ."""
+
+    question: str = Field(..., min_length=1)
+    answer: str = Field(..., min_length=1)
+
+
+class FaqOut(BaseModel):
+    """Serialized knowledge base FAQ record."""
+
+    id: str
+    question: str
+    answer: str
+    created_at: str | None = None
+
+
+class KbOverviewResponse(BaseModel):
+    """Knowledge base overview payload for HR management."""
+
+    policies: list[PolicyOut] = Field(default_factory=list)
+    faqs: list[FaqOut] = Field(default_factory=list)
+    employees: list[UserProfileOut] = Field(default_factory=list)
+
+
+class ChatRequest(BaseModel):
+    """Employee support chat prompt payload."""
+
+    message: str = Field(..., min_length=1)
+
+
+class ChatResponse(BaseModel):
+    """Employee support chat response payload."""
+
+    response: str

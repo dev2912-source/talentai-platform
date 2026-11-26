@@ -1,0 +1,160 @@
+from types import SimpleNamespace
+
+from app.ai import support as support_ai
+
+
+class _CapturingFakeLLM:
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.captured_messages = []
+
+    def invoke(self, messages):
+        self.captured_messages = messages
+        return SimpleNamespace(content=self.reply)
+
+
+def test_kb_crud_requires_hr_and_supports_policies_and_faqs(
+    client, mock_supabase, hr_headers, employee_headers
+):
+    # Employee blocked across all KB routes
+    assert client.get("/api/kb/overview", headers=employee_headers).status_code == 403
+    assert client.post(
+        "/api/kb/policies",
+        headers=employee_headers,
+        json={"title": "Test", "content": "Blocked"},
+    ).status_code == 403
+    assert client.post(
+        "/api/kb/faqs",
+        headers=employee_headers,
+        json={"question": "Test?", "answer": "Blocked"},
+    ).status_code == 403
+
+    # HR creates policy
+    p_create = client.post(
+        "/api/kb/policies",
+        headers=hr_headers,
+        json={"title": "Leave Policy", "content": "20 days PTO per year."},
+    )
+    assert p_create.status_code == 201
+    policy = p_create.json()
+    policy_id = policy["id"]
+    assert policy["title"] == "Leave Policy"
+
+    # HR updates policy
+    p_update = client.put(
+        f"/api/kb/policies/{policy_id}",
+        headers=hr_headers,
+        json={"title": "Annual Leave Policy", "content": "22 days PTO per year."},
+    )
+    assert p_update.status_code == 200
+    assert p_update.json()["title"] == "Annual Leave Policy"
+    assert p_update.json()["content"] == "22 days PTO per year."
+
+    # Employee blocked on update/delete
+    assert client.put(
+        f"/api/kb/policies/{policy_id}",
+        headers=employee_headers,
+        json={"title": "Hack", "content": "Hack"},
+    ).status_code == 403
+    assert client.delete(f"/api/kb/policies/{policy_id}", headers=employee_headers).status_code == 403
+
+    # HR creates & updates FAQ
+    f_create = client.post(
+        "/api/kb/faqs",
+        headers=hr_headers,
+        json={"question": "When is payday?", "answer": "15th of each month."},
+    )
+    assert f_create.status_code == 201
+    faq_id = f_create.json()["id"]
+
+    f_update = client.put(
+        f"/api/kb/faqs/{faq_id}",
+        headers=hr_headers,
+        json={"question": "When is payday?", "answer": "15th and last working day."},
+    )
+    assert f_update.status_code == 200
+    assert "last working day" in f_update.json()["answer"]
+
+    # HR overview lists policies, FAQs, and non-HR employees
+    overview = client.get("/api/kb/overview", headers=hr_headers)
+    assert overview.status_code == 200
+    ov_data = overview.json()
+    assert len(ov_data["policies"]) == 1
+    assert len(ov_data["faqs"]) == 1
+    assert len(ov_data["employees"]) == 1
+    assert ov_data["employees"][0]["username"] == "john"
+
+    # Delete policy & FAQ
+    assert client.delete(f"/api/kb/policies/{policy_id}", headers=hr_headers).status_code == 200
+    assert client.delete(f"/api/kb/faqs/{faq_id}", headers=hr_headers).status_code == 200
+    assert mock_supabase.tables["company_policies"] == []
+    assert mock_supabase.tables["faqs"] == []
+
+    # Deleting missing item returns 404
+    assert client.delete(f"/api/kb/policies/{policy_id}", headers=hr_headers).status_code == 404
+    assert client.delete(f"/api/kb/faqs/{faq_id}", headers=hr_headers).status_code == 404
+
+
+def test_chat_rbac_and_context_injection(
+    client, mock_supabase, hr_headers, employee_headers, monkeypatch
+):
+    mock_supabase.tables["company_policies"] = [
+        {
+            "id": "pol-1",
+            "title": "Leave Policy",
+            "content": "Full-time staff receive 20 PTO days annually.",
+        },
+        {
+            "id": "pol-2",
+            "title": "Travel Expense Guidelines",
+            "content": "Flight bookings require manager sign-off.",
+        },
+    ]
+    mock_supabase.tables["faqs"] = [
+        {
+            "id": "faq-1",
+            "question": "How do I request leave?",
+            "answer": "Submit leave requests 2 weeks ahead in the HR portal.",
+        },
+        {
+            "id": "faq-2",
+            "question": "How do I reset my VPN?",
+            "answer": "Contact IT Helpdesk.",
+        },
+    ]
+
+    fake_llm = _CapturingFakeLLM("You have 14 leave days remaining and our PTO policy grants 20 days annually.")
+    monkeypatch.setattr(support_ai, "get_llm", lambda temperature=0.3: fake_llm)
+
+    # Unauthenticated -> 401
+    assert client.post("/api/chat", json={"message": "What is my leave balance?"}).status_code == 401
+
+    # HR -> 403
+    hr_res = client.post(
+        "/api/chat",
+        headers=hr_headers,
+        json={"message": "What is my leave balance?"},
+    )
+    assert hr_res.status_code == 403
+
+    # Employee -> 200
+    emp_res = client.post(
+        "/api/chat",
+        headers=employee_headers,
+        json={"message": "What is my salary and leave policy?"},
+    )
+    assert emp_res.status_code == 200
+    assert "14 leave days" in emp_res.json()["response"]
+
+    # Verify employee profile fields + matching policy/FAQ were injected into prompt
+    system_prompt = str(fake_llm.captured_messages[0].content)
+    assert "Name: john" in system_prompt
+    assert "Department: Engineering" in system_prompt
+    assert "Salary: $85000.0" in system_prompt
+    assert "Leave Balance: 14 days" in system_prompt
+    assert "Attendance Score: 95/100" in system_prompt
+    assert "Leave Policy" in system_prompt
+    assert "How do I request leave?" in system_prompt
+    # Unrelated policy/FAQ should be filtered out by keyword ilike search
+    assert "Travel Expense Guidelines" not in system_prompt
+    assert "How do I reset my VPN?" not in system_prompt
