@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 import uuid
 
+from dateutil import parser as dt_parser
 import pytest
 from fastapi.testclient import TestClient
 
@@ -117,6 +118,22 @@ class FakeQueryBuilder:
         self._filters.append(("in", column, values))
         return self
 
+    def gte(self, column: str, value: Any):
+        self._filters.append(("gte", column, value))
+        return self
+
+    def lte(self, column: str, value: Any):
+        self._filters.append(("lte", column, value))
+        return self
+
+    def gt(self, column: str, value: Any):
+        self._filters.append(("gt", column, value))
+        return self
+
+    def lt(self, column: str, value: Any):
+        self._filters.append(("lt", column, value))
+        return self
+
     def order(self, column: str, desc: bool = False):
         self._order_by = (column, desc)
         return self
@@ -133,12 +150,40 @@ class FakeQueryBuilder:
         self._maybe_single = True
         return self
 
+    @staticmethod
+    def _coerce_comparable(left: Any, right: Any) -> tuple[Any, Any]:
+        if isinstance(left, str) and isinstance(right, str):
+            try:
+                l_dt = dt_parser.isoparse(left)
+                r_dt = dt_parser.isoparse(right)
+                if l_dt.tzinfo is None:
+                    l_dt = l_dt.replace(tzinfo=timezone.utc)
+                if r_dt.tzinfo is None:
+                    r_dt = r_dt.replace(tzinfo=timezone.utc)
+                return l_dt.astimezone(timezone.utc), r_dt.astimezone(timezone.utc)
+            except (ValueError, TypeError):
+                pass
+        return left, right
+
     def _matches(self, row: dict[str, Any]) -> bool:
         for op, col, val in self._filters:
-            if op == "eq" and row.get(col) != val:
+            cell = row.get(col)
+            if op == "eq" and cell != val:
                 return False
-            if op == "in" and row.get(col) not in val:
+            if op == "in" and cell not in val:
                 return False
+            if op in ("gte", "lte", "gt", "lt"):
+                if cell is None:
+                    return False
+                left, right = self._coerce_comparable(cell, val)
+                if op == "gte" and not (left >= right):
+                    return False
+                if op == "lte" and not (left <= right):
+                    return False
+                if op == "gt" and not (left > right):
+                    return False
+                if op == "lt" and not (left < right):
+                    return False
         return True
 
     def execute(self):
@@ -165,7 +210,11 @@ class FakeQueryBuilder:
             for item in items:
                 new_row = deepcopy(item)
                 if "id" not in new_row:
-                    new_row["id"] = str(uuid.uuid4())
+                    if self._table_name == "attendance_logs":
+                        max_id = max((r.get("id", 0) for r in rows if isinstance(r.get("id"), int)), default=0)
+                        new_row["id"] = max_id + 1
+                    else:
+                        new_row["id"] = str(uuid.uuid4())
                 if "created_at" not in new_row:
                     new_row["created_at"] = datetime.now(timezone.utc).isoformat()
                 rows.append(new_row)

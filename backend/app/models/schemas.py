@@ -102,3 +102,55 @@ class ApproveJobResponse(BaseModel):
     sent_count: int = 0
     rejected_count: int = 0
     candidates: list[CandidateOut] = Field(default_factory=list)
+
+
+class TapDataOut(BaseModel):
+    """Payload describing a recorded hardware attendance tap."""
+
+    id: int | str
+    employeeId: str
+    tapType: str
+    tapNumber: int
+    timestamp: str
+    deviceType: str
+    location: str
+
+
+class TapResponse(BaseModel):
+    """Response returned by POST /api/attendance/tap."""
+
+    status: str = "success"
+    message: str
+    data: TapDataOut
+
+
+class AttendanceLogOut(BaseModel):
+    """Serialized attendance hardware tap log row."""
+
+    id: int | str
+    employee_id: str
+    timestamp: str
+    device_type: str = "rfid_scanner"
+    location: str = "Main Entrance"
+    tap_type: str
+    created_at: str | None = None
+
+
+class AttendanceReportOut(BaseModel):
+    """Serialized AI attendance analysis row."""
+
+    id: str
+    batch_id: str
+    employee_name: str
+    total_hours: float
+    leaves_taken: int
+    ai_score: int | None = None
+    ai_feedback: str = ""
+    created_at: str | None = None
+
+
+class AttendanceReportBatchResponse(BaseModel):
+    """Batch response for uploaded or fetched AI attendance reports."""
+
+    batch_id: str | None = None
+    reports: list[AttendanceReportOut] = Field(default_factory=list)

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.models.schemas import HealthResponse
+from app.routers.attendance import router as attendance_router
 from app.routers.auth import router as auth_router
 from app.routers.recruitment import router as recruitment_router
 
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
 
     application.include_router(auth_router)
     application.include_router(recruitment_router)
+    application.include_router(attendance_router)
     return application
 
 
