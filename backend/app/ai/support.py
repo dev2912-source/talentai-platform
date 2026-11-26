@@ -97,4 +97,4 @@ def generate_support_response(
         return str(getattr(response, "content", response))
     except Exception as exc:
         logger.exception("Error in support agent")
-        return f"I'm sorry, I encountered an internal error while processing your request: {exc}"
+        raise RuntimeError("Support agent failed to generate a response.") from exc

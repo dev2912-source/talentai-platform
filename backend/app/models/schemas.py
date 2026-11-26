@@ -185,6 +185,8 @@ class PerformanceBatchResponse(BaseModel):
 class PolicyIn(BaseModel):
     """Payload for creating or updating a company policy."""
 
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     title: str = Field(..., min_length=1)
     content: str = Field(..., min_length=1)
 
@@ -200,6 +202,8 @@ class PolicyOut(BaseModel):
 
 class FaqIn(BaseModel):
     """Payload for creating or updating a knowledge base FAQ."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     question: str = Field(..., min_length=1)
     answer: str = Field(..., min_length=1)
@@ -224,6 +228,8 @@ class KbOverviewResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     """Employee support chat prompt payload."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     message: str = Field(..., min_length=1)
 

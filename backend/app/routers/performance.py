@@ -33,13 +33,21 @@ def _is_valid_uuid(value: str) -> bool:
 
 
 def _find_identifier_column(columns: list[Any]) -> tuple[Any, bool]:
-    """Locate the employee identifier column and whether it represents an ID."""
-    for col in columns:
-        col_lower = str(col).strip().lower()
-        if "email" in col_lower or "username" in col_lower or "name" in col_lower:
+    """Locate the employee identifier column, prioritizing explicit employee headers."""
+    normalized = [(col, str(col).strip().lower().replace("_", " ")) for col in columns]
+
+    for col, col_norm in normalized:
+        if "employee email" in col_norm or "employee username" in col_norm or "employee name" in col_norm:
             return col, False
-        if col_lower == "id" or "employee id" in col_lower:
+        if "employee id" in col_norm:
             return col, True
+
+    for col, col_norm in normalized:
+        if "email" in col_norm or "username" in col_norm or "name" in col_norm:
+            return col, False
+        if col_norm == "id":
+            return col, True
+
     raise ValueError(
         "Excel file must contain an 'Employee Name', 'Username', 'Email', or 'Employee ID' column to identify employees."
     )
@@ -53,12 +61,24 @@ def _list_auth_users(supabase: Client) -> list[Any]:
     return getattr(response, "users", []) or []
 
 
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE/ILIKE wildcard characters for literal matching."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _find_profile_by(supabase: Client, column: str, value: str, *, case_insensitive: bool = False) -> dict[str, Any] | None:
-    """Fetch a single non-HR employee profile matching the given column."""
-    query = supabase.table("profiles").select("*").eq("is_hr", False)
-    query = query.ilike(column, value) if case_insensitive else query.eq(column, value)
+    """Fetch a single profile row matching the given column regardless of HR status."""
+    query = supabase.table("profiles").select("*")
+    query = query.ilike(column, _escape_like(value)) if case_insensitive else query.eq(column, value)
     res = query.maybe_single().execute()
     return getattr(res, "data", None)
+
+
+def _ensure_non_hr_profile(profile: dict[str, Any], identifier: str) -> None:
+    """Reject performance review generation for HR accounts to prevent privilege demotion."""
+    if profile.get("is_hr"):
+        label = profile.get("email") or profile.get("username") or identifier
+        raise ValueError(f"Cannot generate employee performance review for HR user '{label}'.")
 
 
 def _extract_row_field(row: pd.Series, token: str) -> str | None:
@@ -81,20 +101,24 @@ def _ensure_employee_profile(
     if is_id and _is_valid_uuid(identifier):
         found = _find_profile_by(supabase, "id", identifier)
         if found:
+            _ensure_non_hr_profile(found, identifier)
             return found, str(found.get("username") or identifier)
 
     if "@" in identifier:
         found = _find_profile_by(supabase, "email", identifier.lower(), case_insensitive=True)
         if found:
+            _ensure_non_hr_profile(found, identifier)
             return found, str(found.get("username") or identifier)
     else:
         found = _find_profile_by(supabase, "username", identifier, case_insensitive=True)
         if found:
+            _ensure_non_hr_profile(found, identifier)
             return found, str(found.get("username") or identifier)
         safe_candidate = identifier.replace(" ", "_").lower()
         if safe_candidate != identifier:
             found = _find_profile_by(supabase, "username", safe_candidate, case_insensitive=True)
             if found:
+                _ensure_non_hr_profile(found, identifier)
                 return found, str(found.get("username") or safe_candidate)
 
     display_name = identifier
@@ -115,6 +139,7 @@ def _ensure_employee_profile(
     # Check once more by resolved email before creating an auth user
     existing_by_email = _find_profile_by(supabase, "email", email, case_insensitive=True)
     if existing_by_email:
+        _ensure_non_hr_profile(existing_by_email, email)
         return existing_by_email, str(existing_by_email.get("username") or safe_username)
 
     department = _extract_row_field(row, "department") or "General"
@@ -152,10 +177,16 @@ def _ensure_employee_profile(
     if not user_id:
         raise RuntimeError(f"Failed to resolve or create Supabase Auth user for {email}.")
 
+    # Re-check by user_id before inserting defaults so existing profiles are never overwritten
+    existing_by_id = _find_profile_by(supabase, "id", user_id)
+    if existing_by_id:
+        _ensure_non_hr_profile(existing_by_id, email)
+        return existing_by_id, str(existing_by_id.get("username") or safe_username)
+
     profile_row = {"id": user_id, "email": email, **metadata}
-    upsert_res = supabase.table("profiles").upsert(profile_row, on_conflict="id").execute()
-    upserted = getattr(upsert_res, "data", None) or [profile_row]
-    return upserted[0], safe_username
+    insert_res = supabase.table("profiles").insert(profile_row).execute()
+    inserted = getattr(insert_res, "data", None) or [profile_row]
+    return inserted[0], safe_username
 
 
 def _process_performance_upload(

@@ -158,3 +158,42 @@ def test_chat_rbac_and_context_injection(
     # Unrelated policy/FAQ should be filtered out by keyword ilike search
     assert "Travel Expense Guidelines" not in system_prompt
     assert "How do I reset my VPN?" not in system_prompt
+
+
+def test_chat_llm_error_returns_502_without_leaking_exception(
+    client, employee_headers, monkeypatch
+):
+    class _BrokenLLM:
+        def invoke(self, _messages):
+            raise RuntimeError("SECRET_OPENROUTER_API_KEY_TRACEBACK")
+
+    monkeypatch.setattr(support_ai, "get_llm", lambda temperature=0.3: _BrokenLLM())
+
+    res = client.post(
+        "/api/chat",
+        headers=employee_headers,
+        json={"message": "What is the leave policy?"},
+    )
+    assert res.status_code == 502
+    body = res.json()
+    assert "SECRET_OPENROUTER_API_KEY_TRACEBACK" not in str(body)
+    assert body["detail"] == "Unable to generate support response right now."
+
+
+def test_kb_and_chat_reject_whitespace_only_strings(client, hr_headers, employee_headers):
+    assert client.post(
+        "/api/kb/policies",
+        headers=hr_headers,
+        json={"title": "   ", "content": "Valid"},
+    ).status_code == 422
+    assert client.post(
+        "/api/kb/faqs",
+        headers=hr_headers,
+        json={"question": "Valid?", "answer": "   "},
+    ).status_code == 422
+    assert client.post(
+        "/api/chat",
+        headers=employee_headers,
+        json={"message": "   "},
+    ).status_code == 422
+

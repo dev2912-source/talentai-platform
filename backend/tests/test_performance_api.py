@@ -196,3 +196,73 @@ def test_build_performance_pdf_escapes_xml_characters():
         }
     ])
     assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_performance_upload_does_not_overwrite_hr_user_profile(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    def _should_not_call_llm(temperature=0.2):
+        raise AssertionError("LLM should not be called for HR user row")
+
+    monkeypatch.setattr(performance_ai, "get_llm", _should_not_call_llm)
+
+    xlsx_bytes = _make_performance_xlsx_bytes(
+        [["admin@company.com", 99]],
+        headers=["Employee Email", "KPI Score"],
+    )
+    res = client.post(
+        "/api/performance/upload",
+        headers=hr_headers,
+        data={"review_period": "Q2 2026"},
+        files={"file": ("hr_perf.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert res.status_code == 400
+    assert "HR user" in res.json()["detail"]
+
+    admin_profile = next(p for p in mock_supabase.tables["profiles"] if p["email"] == "admin@company.com")
+    assert admin_profile["is_hr"] is True
+    assert admin_profile["department"] == "Human Resources"
+    assert admin_profile["salary"] == 50000.0
+    assert admin_profile["leave_balance"] == 10
+    assert admin_profile["attendance_score"] == 100
+    assert mock_supabase.tables["performance_records"] == []
+
+
+def test_performance_upload_existing_auth_fallback_preserves_existing_employee_profile(
+    client, mock_supabase, hr_headers, monkeypatch
+):
+    # Pre-seed an auth user matching an existing employee profile with custom salary/leave
+    existing_emp = next(p for p in mock_supabase.tables["profiles"] if p["email"] == "john@company.com")
+    mock_supabase.auth._users = []
+    # Force fallback by creating an auth user with john's id & email, and looking up via fallback
+    mock_supabase.auth.admin._users.append(
+        SimpleNamespace(id=existing_emp["id"], email="john@company.com", user_metadata={})
+    )
+    llm_payload = json.dumps({
+        "performance_score": 90,
+        "kpi_achievement_percent": 92.0,
+        "strengths": ["Consistent delivery"],
+        "areas_for_improvement": ["More mentoring"],
+        "recommended_actions": ["Lead architecture review"],
+    })
+    fake_llm = _FakeLLM([llm_payload])
+    monkeypatch.setattr(performance_ai, "get_llm", lambda temperature=0.2: fake_llm)
+
+    # Match by employee_id column (UUID) to exercise id lookup + profile preservation
+    xlsx_bytes = _make_performance_xlsx_bytes(
+        [[existing_emp["id"], 95]],
+        headers=["Employee ID", "KPI Score"],
+    )
+    res = client.post(
+        "/api/performance/upload",
+        headers=hr_headers,
+        data={"review_period": "Q2 2026"},
+        files={"file": ("emp_id.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert res.status_code == 200
+    john_profile = next(p for p in mock_supabase.tables["profiles"] if p["email"] == "john@company.com")
+    assert john_profile["salary"] == 85000.0
+    assert john_profile["leave_balance"] == 14
+    assert john_profile["attendance_score"] == 95
+    assert john_profile["department"] == "Engineering"
+

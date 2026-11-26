@@ -179,13 +179,20 @@ class FakeQueryBuilder:
     @staticmethod
     def _like_to_regex(pattern: str) -> re.Pattern[str]:
         parts: list[str] = ["^"]
-        for ch in pattern:
+        i = 0
+        while i < len(pattern):
+            ch = pattern[i]
+            if ch == "\\" and i + 1 < len(pattern):
+                parts.append(re.escape(pattern[i + 1]))
+                i += 2
+                continue
             if ch == "%":
                 parts.append(".*")
             elif ch == "_":
                 parts.append(".")
             else:
                 parts.append(re.escape(ch))
+            i += 1
         parts.append("$")
         return re.compile("".join(parts), re.IGNORECASE | re.DOTALL)
 
